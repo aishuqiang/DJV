@@ -353,6 +353,17 @@ namespace djv
             return data[static_cast<size_t>(value)];
         }
 
+        int getPaneTimelineThumbnailSize(TimelineThumbnailSize value)
+        {
+            const std::array<int, static_cast<size_t>(TimelineThumbnailSize::Count)> data =
+            {
+                128,
+                160,
+                220
+            };
+            return data[static_cast<size_t>(value)];
+        }
+
         int getTimelineWaveformSize(TimelineThumbnailSize value)
         {
             const std::array<int, static_cast<size_t>(TimelineThumbnailSize::Count)> data =

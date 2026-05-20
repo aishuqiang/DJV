@@ -211,15 +211,15 @@ namespace djv
                     FTK_P();
                     _actions["Next"]->setEnabled(value.size() > 1);
                     _actions["Prev"]->setEnabled(value.size() > 1);
-                    _actions["A"]->setEnabled(!value.empty());
-                    _actions["B"]->setEnabled(!value.empty());
-                    _actions["Wipe"]->setEnabled(!value.empty());
-                    _actions["Overlay"]->setEnabled(!value.empty());
-                    _actions["Difference"]->setEnabled(!value.empty());
-                    _actions["Horizontal"]->setEnabled(!value.empty());
-                    _actions["Vertical"]->setEnabled(!value.empty());
-                    _actions["Tile"]->setEnabled(!value.empty());
-                    _actions["ABToggle"]->setEnabled(!value.empty());
+                    _actions["A"]->setEnabled(true);
+                    _actions["B"]->setEnabled(true);
+                    _actions["Wipe"]->setEnabled(true);
+                    _actions["Overlay"]->setEnabled(true);
+                    _actions["Difference"]->setEnabled(true);
+                    _actions["Horizontal"]->setEnabled(true);
+                    _actions["Vertical"]->setEnabled(true);
+                    _actions["Tile"]->setEnabled(true);
+                    _actions["ABToggle"]->setEnabled(true);
                 });
 
             p.optionsObserver = ftk::Observer<tl::CompareOptions>::create(

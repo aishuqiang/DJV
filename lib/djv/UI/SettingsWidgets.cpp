@@ -1061,10 +1061,43 @@ namespace djv
 
             std::shared_ptr<ftk::FileEdit> ffmpegEdit;
             std::shared_ptr<ftk::FileEdit> ffprobeEdit;
+            std::shared_ptr<ftk::ComboBox> hardwareDecodeComboBox;
             std::shared_ptr<ftk::FormLayout> layout;
 
             std::shared_ptr<ftk::Observer<tl::ffmpeg_cmd::Options> > optionsObserver;
         };
+
+        namespace
+        {
+            const std::vector<std::string>& getHardwareDecodeLabels()
+            {
+                static const std::vector<std::string> labels =
+                {
+                    "Auto",
+                    "Off",
+                    "VideoToolbox",
+                    "D3D11VA",
+                    "DXVA2",
+                    "VAAPI",
+                    "QSV",
+                    "CUDA"
+                };
+                return labels;
+            }
+
+            int getHardwareDecodeIndex(const std::string& value)
+            {
+                const auto& labels = getHardwareDecodeLabels();
+                for (size_t i = 0; i < labels.size(); ++i)
+                {
+                    if (ftk::compare(labels[i], value, ftk::CaseCompare::Insensitive))
+                    {
+                        return static_cast<int>(i);
+                    }
+                }
+                return 0;
+            }
+        }
 
         void FFmpegCmdSettingsWidget::_init(
             const std::shared_ptr<ftk::Context>& context,
@@ -1079,11 +1112,13 @@ namespace djv
             p.ffmpegEdit = ftk::FileEdit::create(context);
 
             p.ffprobeEdit = ftk::FileEdit::create(context);
+            p.hardwareDecodeComboBox = ftk::ComboBox::create(context, getHardwareDecodeLabels());
 
             p.layout = ftk::FormLayout::create(context, shared_from_this());
             p.layout->setSpacingRole(ftk::SizeRole::SpacingSmall);
             p.layout->addRow("ffmpeg location:", p.ffmpegEdit);
             p.layout->addRow("ffprobe location:", p.ffprobeEdit);
+            p.layout->addRow("Hardware decode:", p.hardwareDecodeComboBox);
 
             p.optionsObserver = ftk::Observer<tl::ffmpeg_cmd::Options>::create(
                 settings->observeFFmpegCmd(),
@@ -1092,6 +1127,8 @@ namespace djv
                     FTK_P();
                     p.ffmpegEdit->setPath(ftk::Path(value.ffmpegPath));
                     p.ffprobeEdit->setPath(ftk::Path(value.ffprobePath));
+                    p.hardwareDecodeComboBox->setCurrentIndex(
+                        getHardwareDecodeIndex(value.hardwareDecode));
                 });
 
             p.ffmpegEdit->setCallback(
@@ -1110,6 +1147,19 @@ namespace djv
                     tl::ffmpeg_cmd::Options options = p.settings->getFFmpegCmd();
                     options.ffprobePath = value.get();
                     p.settings->setFFmpegCmd(options);
+                });
+
+            p.hardwareDecodeComboBox->setIndexCallback(
+                [this](int value)
+                {
+                    FTK_P();
+                    const auto& labels = getHardwareDecodeLabels();
+                    if (value >= 0 && value < static_cast<int>(labels.size()))
+                    {
+                        tl::ffmpeg_cmd::Options options = p.settings->getFFmpegCmd();
+                        options.hardwareDecode = labels[value];
+                        p.settings->setFFmpegCmd(options);
+                    }
                 });
         }
 

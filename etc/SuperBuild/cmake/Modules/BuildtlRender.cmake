@@ -37,11 +37,21 @@ ExternalProject_Add(
     LIST_SEPARATOR |
     CMAKE_ARGS ${TLRENDER_ARGS})
 
+set(TLRENDER_PATCH_FILE ${CMAKE_CURRENT_LIST_DIR}/../../patches/tlRender/local-ui-thumbnails.patch)
+if(EXISTS ${TLRENDER_PATCH_FILE})
+    set(TLRENDER_PATCH_COMMAND
+        ${CMAKE_COMMAND} -E chdir <SOURCE_DIR>
+        git apply --ignore-whitespace ${TLRENDER_PATCH_FILE})
+else()
+    set(TLRENDER_PATCH_COMMAND "")
+endif()
+
 ExternalProject_Add(
     tl
     PREFIX ${CMAKE_CURRENT_BINARY_DIR}/tl
     DEPENDS tl-sb
     GIT_REPOSITORY ${TLRENDER_GIT_REPOSITORY}
     GIT_TAG ${TLRENDER_GIT_TAG}
+    PATCH_COMMAND ${TLRENDER_PATCH_COMMAND}
     LIST_SEPARATOR |
     CMAKE_ARGS ${TLRENDER_ARGS})

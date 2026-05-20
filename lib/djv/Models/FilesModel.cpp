@@ -23,6 +23,8 @@ namespace djv
             std::shared_ptr<ftk::ObservableList<int> > layers;
             std::shared_ptr<ftk::Observable<tl::CompareOptions> > compareOptions;
             std::shared_ptr<ftk::Observable<tl::CompareTime> > compareTime;
+            std::shared_ptr<ftk::Observable<DisplayMode> > displayMode;
+            std::shared_ptr<ftk::Observable<DualPlaybackMode> > dualPlaybackMode;
         };
 
         void FilesModel::_init(const std::shared_ptr<ftk::Settings>& settings)
@@ -33,7 +35,7 @@ namespace djv
 
             p.files = ftk::ObservableList<std::shared_ptr<FilesModelItem> >::create();
             p.a = ftk::Observable<std::shared_ptr<FilesModelItem> >::create();
-            p.aIndex = ftk::Observable<int>::create();
+            p.aIndex = ftk::Observable<int>::create(-1);
             p.b = ftk::ObservableList<std::shared_ptr<FilesModelItem> >::create();
             p.bIndexes = ftk::ObservableList<int>::create();
             p.active = ftk::ObservableList<std::shared_ptr<FilesModelItem> >::create();
@@ -48,6 +50,8 @@ namespace djv
             tl::CompareTime compareTime = tl::CompareTime::First;
             from_string(s, compareTime);
             p.compareTime = ftk::Observable<tl::CompareTime>::create(compareTime);
+            p.displayMode = ftk::Observable<DisplayMode>::create(DisplayMode::Single);
+            p.dualPlaybackMode = ftk::Observable<DualPlaybackMode>::create(DualPlaybackMode::Sync);
         }
 
         FilesModel::FilesModel() :
@@ -131,14 +135,24 @@ namespace djv
             return _p->active;
         }
 
-        void FilesModel::add(const std::shared_ptr<FilesModelItem>& item)
+        void FilesModel::add(
+            const std::shared_ptr<FilesModelItem>& item,
+            bool makeCurrent,
+            bool assignCurrentWhenEmpty)
         {
             FTK_P();
 
             p.files->pushBack(item);
 
-            p.a->setIfChanged(p.files->getItem(p.files->getSize() - 1));
-            p.aIndex->setIfChanged(_getIndex(p.a->get()));
+            if (makeCurrent || (assignCurrentWhenEmpty && !p.a->get()))
+            {
+                p.a->setIfChanged(p.files->getItem(p.files->getSize() - 1));
+                p.aIndex->setIfChanged(_getIndex(p.a->get()));
+            }
+            else if (!p.a->get())
+            {
+                p.aIndex->setIfChanged(-1);
+            }
 
             p.active->setIfChanged(_getActive());
             p.layers->setIfChanged(_getLayers());
@@ -187,16 +201,17 @@ namespace djv
                 }
                 p.b->setIfChanged(b);
                 p.bIndexes->setIfChanged(_getBIndexes());
-
-                p.active->setIfChanged(_getActive());
-                p.layers->setIfChanged(_getLayers());
-
-                if (files.size() <= 1)
+                if (b.empty() && DisplayMode::Dual == p.displayMode->get())
                 {
                     auto compareOptions = p.compareOptions->get();
                     compareOptions.compare = tl::Compare::A;
                     p.compareOptions->setIfChanged(compareOptions);
+                    p.displayMode->setIfChanged(DisplayMode::Single);
                 }
+
+                p.active->setIfChanged(_getActive());
+                p.layers->setIfChanged(_getLayers());
+
             }
         }
 
@@ -211,6 +226,11 @@ namespace djv
 
             p.b->clear();
             p.bIndexes->setIfChanged(_getBIndexes());
+
+            auto compareOptions = p.compareOptions->get();
+            compareOptions.compare = tl::Compare::A;
+            p.compareOptions->setIfChanged(compareOptions);
+            p.displayMode->setIfChanged(DisplayMode::Single);
 
             p.active->setIfChanged(_getActive());
             p.layers->setIfChanged(_getLayers());
@@ -267,6 +287,21 @@ namespace djv
                 p.b->setIfChanged(b);
                 p.bIndexes->setIfChanged(_getBIndexes());
 
+                if (value)
+                {
+                    auto compareOptions = p.compareOptions->get();
+                    compareOptions.compare = tl::Compare::Horizontal;
+                    p.compareOptions->setIfChanged(compareOptions);
+                    p.displayMode->setIfChanged(DisplayMode::Dual);
+                }
+                else if (b.empty())
+                {
+                    auto compareOptions = p.compareOptions->get();
+                    compareOptions.compare = tl::Compare::A;
+                    p.compareOptions->setIfChanged(compareOptions);
+                    p.displayMode->setIfChanged(DisplayMode::Single);
+                }
+
                 p.active->setIfChanged(_getActive());
                 p.layers->setIfChanged(_getLayers());
             }
@@ -289,6 +324,11 @@ namespace djv
             {
                 p.b->clear();
                 p.bIndexes->setIfChanged(_getBIndexes());
+
+                auto compareOptions = p.compareOptions->get();
+                compareOptions.compare = tl::Compare::A;
+                p.compareOptions->setIfChanged(compareOptions);
+                p.displayMode->setIfChanged(DisplayMode::Single);
 
                 p.active->setIfChanged(_getActive());
                 p.layers->setIfChanged(_getLayers());
@@ -372,6 +412,13 @@ namespace djv
                 p.b->pushBack(p.files->getItem(0));
             }
             p.bIndexes->setIfChanged(_getBIndexes());
+            if (!p.b->isEmpty())
+            {
+                auto compareOptions = p.compareOptions->get();
+                compareOptions.compare = tl::Compare::Horizontal;
+                p.compareOptions->setIfChanged(compareOptions);
+                p.displayMode->setIfChanged(DisplayMode::Dual);
+            }
 
             p.active->setIfChanged(_getActive());
             p.layers->setIfChanged(_getLayers());
@@ -387,6 +434,13 @@ namespace djv
                 p.b->pushBack(p.files->getItem(p.files->getSize() - 1));
             }
             p.bIndexes->setIfChanged(_getBIndexes());
+            if (!p.b->isEmpty())
+            {
+                auto compareOptions = p.compareOptions->get();
+                compareOptions.compare = tl::Compare::Horizontal;
+                p.compareOptions->setIfChanged(compareOptions);
+                p.displayMode->setIfChanged(DisplayMode::Dual);
+            }
 
             p.active->setIfChanged(_getActive());
             p.layers->setIfChanged(_getLayers());
@@ -413,6 +467,13 @@ namespace djv
                 p.b->pushBack(p.files->getItem(index));
             }
             p.bIndexes->setIfChanged(_getBIndexes());
+            if (!p.b->isEmpty())
+            {
+                auto compareOptions = p.compareOptions->get();
+                compareOptions.compare = tl::Compare::Horizontal;
+                p.compareOptions->setIfChanged(compareOptions);
+                p.displayMode->setIfChanged(DisplayMode::Dual);
+            }
 
             p.active->setIfChanged(_getActive());
             p.layers->setIfChanged(_getLayers());
@@ -439,6 +500,13 @@ namespace djv
                 p.b->pushBack(p.files->getItem(index));
             }
             p.bIndexes->setIfChanged(_getBIndexes());
+            if (!p.b->isEmpty())
+            {
+                auto compareOptions = p.compareOptions->get();
+                compareOptions.compare = tl::Compare::Horizontal;
+                p.compareOptions->setIfChanged(compareOptions);
+                p.displayMode->setIfChanged(DisplayMode::Dual);
+            }
 
             p.active->setIfChanged(_getActive());
             p.layers->setIfChanged(_getLayers());
@@ -509,10 +577,21 @@ namespace djv
         void FilesModel::setCompareOptions(const tl::CompareOptions& value)
         {
             FTK_P();
-            if (p.compareOptions->setIfChanged(value))
+            auto normalized = value;
+            const DisplayMode displayMode =
+                tl::Compare::A == value.compare ?
+                DisplayMode::Single :
+                DisplayMode::Dual;
+            normalized.compare =
+                DisplayMode::Dual == displayMode ?
+                tl::Compare::Horizontal :
+                tl::Compare::A;
+            const bool optionsChanged = p.compareOptions->setIfChanged(normalized);
+            const bool displayModeChanged = p.displayMode->setIfChanged(displayMode);
+            if (optionsChanged || displayModeChanged)
             {
                 auto b = p.b->get();
-                switch (value.compare)
+                switch (normalized.compare)
                 {
                 case tl::Compare::A:
                 case tl::Compare::B:
@@ -530,7 +609,7 @@ namespace djv
                 }
                 default: break;
                 }
-                switch (value.compare)
+                switch (normalized.compare)
                 {
                 case tl::Compare::B:
                 case tl::Compare::Wipe:
@@ -540,7 +619,7 @@ namespace djv
                 case tl::Compare::Vertical:
                 case tl::Compare::Tile:
                 {
-                    if (b.empty() && !p.files->isEmpty())
+                    if (b.empty() && p.files->getSize() > 1)
                     {
                         int index = _getIndex(p.a->get());
                         if (index != -1)
@@ -551,7 +630,10 @@ namespace djv
                                 index = p.files->getSize() - 1;
                             }
                         }
-                        b.push_back(p.files->getItem(index));
+                        if (index != -1 && p.files->getItem(index) != p.a->get())
+                        {
+                            b.push_back(p.files->getItem(index));
+                        }
                     }
                     break;
                 }
@@ -583,6 +665,49 @@ namespace djv
             p.compareTime->setIfChanged(value);
         }
 
+        DisplayMode FilesModel::getDisplayMode() const
+        {
+            return _p->displayMode->get();
+        }
+
+        std::shared_ptr<ftk::IObservable<DisplayMode> > FilesModel::observeDisplayMode() const
+        {
+            return _p->displayMode;
+        }
+
+        void FilesModel::setDisplayMode(DisplayMode value)
+        {
+            FTK_P();
+            auto compareOptions = p.compareOptions->get();
+            compareOptions.compare =
+                DisplayMode::Dual == value ?
+                tl::Compare::Horizontal :
+                tl::Compare::A;
+            const bool displayModeChanged = p.displayMode->setIfChanged(value);
+            const bool optionsChanged = p.compareOptions->setIfChanged(compareOptions);
+            if (displayModeChanged || optionsChanged)
+            {
+                p.active->setIfChanged(_getActive());
+                p.layers->setIfChanged(_getLayers());
+            }
+        }
+
+        DualPlaybackMode FilesModel::getDualPlaybackMode() const
+        {
+            return _p->dualPlaybackMode->get();
+        }
+
+        std::shared_ptr<ftk::IObservable<DualPlaybackMode> > FilesModel::observeDualPlaybackMode() const
+        {
+            return _p->dualPlaybackMode;
+        }
+
+        void FilesModel::setDualPlaybackMode(DualPlaybackMode value)
+        {
+            FTK_P();
+            p.dualPlaybackMode->setIfChanged(value);
+        }
+
         int FilesModel::_getIndex(const std::shared_ptr<FilesModelItem>& item) const
         {
             FTK_P();
@@ -609,24 +734,14 @@ namespace djv
             {
                 out.push_back(p.a->get());
             }
-            switch (p.compareOptions->get().compare)
+            switch (p.displayMode->get())
             {
-            case tl::Compare::A:
+            case DisplayMode::Single:
+                break;
+            case DisplayMode::Dual:
                 if (!p.b->isEmpty())
                 {
                     out.push_back(p.b->getItem(0));
-                }
-                break;
-            case tl::Compare::B:
-            case tl::Compare::Wipe:
-            case tl::Compare::Overlay:
-            case tl::Compare::Difference:
-            case tl::Compare::Horizontal:
-            case tl::Compare::Vertical:
-            case tl::Compare::Tile:
-                for (const auto& b : p.b->get())
-                {
-                    out.push_back(b);
                 }
                 break;
             default: break;

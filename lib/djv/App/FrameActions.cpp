@@ -31,10 +31,7 @@ namespace djv
                 {
                     if (auto app = appWeak.lock())
                     {
-                        if (auto player = app->observePlayer()->get())
-                        {
-                            player->gotoStart();
-                        }
+                        app->transportTimeAction(tl::TimeAction::Start);
                     }
                 });
 
@@ -45,10 +42,7 @@ namespace djv
                 {
                     if (auto app = appWeak.lock())
                     {
-                        if (auto player = app->observePlayer()->get())
-                        {
-                            player->gotoEnd();
-                        }
+                        app->transportTimeAction(tl::TimeAction::End);
                     }
                 });
 
@@ -59,10 +53,7 @@ namespace djv
                 {
                     if (auto app = appWeak.lock())
                     {
-                        if (auto player = app->observePlayer()->get())
-                        {
-                            player->framePrev();
-                        }
+                        app->transportTimeAction(tl::TimeAction::FramePrev);
                     }
                 });
 
@@ -72,10 +63,7 @@ namespace djv
                 {
                     if (auto app = appWeak.lock())
                     {
-                        if (auto player = app->observePlayer()->get())
-                        {
-                            player->timeAction(tl::TimeAction::FramePrevX10);
-                        }
+                        app->transportTimeAction(tl::TimeAction::FramePrevX10);
                     }
                 });
 
@@ -85,10 +73,7 @@ namespace djv
                 {
                     if (auto app = appWeak.lock())
                     {
-                        if (auto player = app->observePlayer()->get())
-                        {
-                            player->timeAction(tl::TimeAction::FramePrevX100);
-                        }
+                        app->transportTimeAction(tl::TimeAction::FramePrevX100);
                     }
                 });
 
@@ -99,10 +84,7 @@ namespace djv
                 {
                     if (auto app = appWeak.lock())
                     {
-                        if (auto player = app->observePlayer()->get())
-                        {
-                            player->frameNext();
-                        }
+                        app->transportTimeAction(tl::TimeAction::FrameNext);
                     }
                 });
 
@@ -112,10 +94,7 @@ namespace djv
                 {
                     if (auto app = appWeak.lock())
                     {
-                        if (auto player = app->observePlayer()->get())
-                        {
-                            player->timeAction(tl::TimeAction::FrameNextX10);
-                        }
+                        app->transportTimeAction(tl::TimeAction::FrameNextX10);
                     }
                 });
 
@@ -125,10 +104,7 @@ namespace djv
                 {
                     if (auto app = appWeak.lock())
                     {
-                        if (auto player = app->observePlayer()->get())
-                        {
-                            player->timeAction(tl::TimeAction::FrameNextX100);
-                        }
+                        app->transportTimeAction(tl::TimeAction::FrameNextX100);
                     }
                 });
 

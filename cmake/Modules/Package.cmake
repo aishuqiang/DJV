@@ -12,7 +12,11 @@ set(CPACK_PACKAGE_VENDOR "Grizzly Peak 3D")
 set(CPACK_VERBATIM_VARIABLES YES)
 
 if(WIN32)
-    set(CPACK_GENERATOR ZIP NSIS)
+    if(DJV_WINDOWS_PORTABLE)
+        set(CPACK_GENERATOR ZIP)
+    else()
+        set(CPACK_GENERATOR ZIP NSIS)
+    endif()
     
     set(INSTALL_DLLS)
 
@@ -129,6 +133,11 @@ if(WIN32)
     set(CPACK_NSIS_MUI_ICON ${PROJECT_SOURCE_DIR}/etc/Windows/DJV_Icon.ico)
     set(CPACK_NSIS_MUI_UNIICON ${PROJECT_SOURCE_DIR}/etc/Windows/DJV_Icon.ico)
     set(CPACK_NSIS_INSTALLED_ICON_NAME bin/djv.exe)
+
+    if(DJV_WINDOWS_PACKAGE)
+        install(FILES ${PROJECT_SOURCE_DIR}/etc/Windows/DJV.bat DESTINATION .)
+        install(FILES ${PROJECT_SOURCE_DIR}/etc/Windows/README-portable-zh.txt DESTINATION .)
+    endif()
 
 elseif(APPLE)
 

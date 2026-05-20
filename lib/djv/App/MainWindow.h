@@ -58,6 +58,12 @@ namespace djv
             //! Get the timeline widget.
             const std::shared_ptr<tl::ui::TimelineWidget>& getTimelineWidget() const;
 
+            //! Get the A timeline widget used by split compare layouts.
+            const std::shared_ptr<tl::ui::TimelineWidget>& getTimelineWidgetA() const;
+
+            //! Get the B timeline widget used by split compare layouts.
+            const std::shared_ptr<tl::ui::TimelineWidget>& getTimelineWidgetB() const;
+
             //! Focus the current frame widget.
             void focusCurrentFrame();
 
@@ -76,6 +82,7 @@ namespace djv
             void _settingsUpdate(const models::MouseSettings&);
             void _settingsUpdate(const models::TimelineSettings&);
             void _settingsUpdate(const models::WindowSettings&);
+            void _updateTimelineDisplayOptions();
 
             FTK_PRIVATE();
         };

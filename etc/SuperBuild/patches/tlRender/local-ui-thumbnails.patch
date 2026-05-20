@@ -1,0 +1,817 @@
+diff -ruN a/lib/tlRender/UI/ThumbnailSystem.cpp b/lib/tlRender/UI/ThumbnailSystem.cpp
+--- a/lib/tlRender/UI/ThumbnailSystem.cpp	2026-05-21 01:41:49
++++ b/lib/tlRender/UI/ThumbnailSystem.cpp	2026-05-21 01:41:49
+@@ -40,7 +40,12 @@
+ 
+         namespace
+         {
+-            const size_t ioCacheMax   = 2;
++            //! Cap queued filmstrip work so timeline decode does not compete with playback.
++            constexpr size_t maxThumbnailQueueSize = 64;
++            constexpr size_t maxPendingThumbnailsPerPath = 10;
++            constexpr size_t maxInfoQueueSize = 12;
++
++            const size_t ioCacheMax   = 4;
+             const size_t infoCacheMax = 1000;
+ 
+             std::string getInfoKey(
+@@ -140,6 +145,8 @@
+                 ftk::LRUCache<std::string, std::shared_ptr<ftk::Image> > cache;
+                 bool stopped = false;
+                 std::mutex mutex;
++                std::condition_variable cv;
++                std::string lastPath;
+             };
+             ThumbnailMutex thumbnailMutex;
+ 
+@@ -170,6 +177,8 @@
+                 std::atomic<bool> running;
+             };
+             ThumbnailThread thumbnailThread;
++            ThumbnailThread thumbnailThread2;
++            std::shared_ptr<ftk::gl::Window> window2;
+ 
+             struct WaveformThread
+             {
+@@ -180,6 +189,7 @@
+             };
+             WaveformThread waveformThread;
+ 
++            std::atomic<bool> requestsEnabled = true;
+             std::shared_ptr<ftk::Timer> logTimer;
+         };
+ 
+@@ -229,18 +239,40 @@
+                     }
+                     if (p.thumbnailThread.render)
+                     {
+-                        _thumbnailRun();
++                        _thumbnailRunWorker(0);
+                     }
+-                    {
+-                        std::unique_lock<std::mutex> lock(p.thumbnailMutex.mutex);
+-                        p.thumbnailMutex.stopped = true;
+-                    }
+                     p.thumbnailThread.buffer.reset();
+                     p.thumbnailThread.render.reset();
+-                    _thumbnailCancel();
+                     p.window->clearCurrent();
+                 });
+ 
++            p.window2 = ftk::gl::Window::create(
++                context,
++                "tl::ui::ThumbnailSystem2",
++                ftk::Size2I(1, 1),
++                static_cast<int>(ftk::gl::WindowOptions::None));
++            p.thumbnailThread2.ioCache.setMax(ioCacheMax);
++            p.thumbnailThread2.running = true;
++            p.thumbnailThread2.thread = std::thread(
++                [this]
++                {
++                    FTK_P();
++                    p.window2->makeCurrent();
++                    if (auto context = p.context.lock())
++                    {
++                        p.thumbnailThread2.render = gl::Render::create(
++                            context->getLogSystem(),
++                            context->getSystem<ftk::FontSystem>());
++                    }
++                    if (p.thumbnailThread2.render)
++                    {
++                        _thumbnailRunWorker(1);
++                    }
++                    p.thumbnailThread2.buffer.reset();
++                    p.thumbnailThread2.render.reset();
++                    p.window2->clearCurrent();
++                });
++
+             p.waveformMutex.cache.setMax(p.cacheOptions->get().waveformMB * ftk::megabyte);
+             p.waveformThread.ioCache.setMax(ioCacheMax);
+             p.waveformThread.running = true;
+@@ -304,7 +336,14 @@
+             FTK_P();
+             p.infoThread.running = false;
+             p.thumbnailThread.running = false;
++            p.thumbnailThread2.running = false;
+             p.waveformThread.running = false;
++            {
++                std::unique_lock<std::mutex> lock(p.thumbnailMutex.mutex);
++                p.thumbnailMutex.stopped = true;
++            }
++            p.thumbnailMutex.cv.notify_all();
++            _thumbnailCancel();
+             if (p.infoThread.thread.joinable())
+             {
+                 p.infoThread.thread.join();
+@@ -313,6 +352,10 @@
+             {
+                 p.thumbnailThread.thread.join();
+             }
++            if (p.thumbnailThread2.thread.joinable())
++            {
++                p.thumbnailThread2.thread.join();
++            }
+             if (p.waveformThread.thread.joinable())
+             {
+                 p.waveformThread.thread.join();
+@@ -359,7 +402,9 @@
+                 std::unique_lock<std::mutex> lock(p.infoMutex.mutex);
+                 if (p.infoMutex.cache.get(key, info))
+                     ;
+-                else if (!p.infoMutex.stopped)
++                else if (!p.infoMutex.stopped &&
++                    p.requestsEnabled &&
++                    p.infoMutex.requests.size() < maxInfoQueueSize)
+                 {
+                     notify = true;
+                     p.infoMutex.requests.push_back(request);
+@@ -418,15 +463,36 @@
+                 std::unique_lock<std::mutex> lock(p.thumbnailMutex.mutex);
+                 if (p.thumbnailMutex.cache.get(key, thumbnail))
+                     ;
+-                else if (!p.thumbnailMutex.stopped)
++                else if (!p.thumbnailMutex.stopped &&
++                    p.requestsEnabled &&
++                    p.thumbnailMutex.requests.size() < maxThumbnailQueueSize)
+                 {
+-                    notify = true;
+-                    p.thumbnailMutex.requests.push_back(request);
++                    size_t pendingForPath = 0;
++                    for (const auto& pending : p.thumbnailMutex.requests)
++                    {
++                        if (pending->path == path)
++                        {
++                            ++pendingForPath;
++                        }
++                    }
++                    if (pendingForPath < maxPendingThumbnailsPerPath)
++                    {
++                        notify = true;
++                        p.thumbnailMutex.requests.push_back(request);
++                    }
++                    else
++                    {
++                        request->promise.set_value(nullptr);
++                    }
+                 }
++                else
++                {
++                    request->promise.set_value(nullptr);
++                }
+             }
+             if (notify)
+             {
+-                p.thumbnailThread.cv.notify_one();
++                p.thumbnailMutex.cv.notify_all();
+             }
+             else
+             {
+@@ -479,7 +545,7 @@
+                 std::unique_lock<std::mutex> lock(p.waveformMutex.mutex);
+                 if (p.waveformMutex.cache.get(key, mesh))
+                     ;
+-                else if (!p.waveformMutex.stopped)
++                else if (!p.waveformMutex.stopped && p.requestsEnabled)
+                 {
+                     notify = true;
+                     p.waveformMutex.requests.push_back(request);
+@@ -555,6 +621,39 @@
+             }
+         }
+ 
++        void ThumbnailSystem::setRequestsEnabled(bool value)
++        {
++            FTK_P();
++            if (p.requestsEnabled.exchange(value) != value && !value)
++            {
++                std::list<std::shared_ptr<Private::ThumbnailRequest> > thumbnailRequests;
++                std::list<std::shared_ptr<Private::WaveformRequest> > waveformRequests;
++                {
++                    std::unique_lock<std::mutex> lock(p.thumbnailMutex.mutex);
++                    thumbnailRequests = std::move(p.thumbnailMutex.requests);
++                    p.thumbnailMutex.cache.clear();
++                }
++                {
++                    std::unique_lock<std::mutex> lock(p.waveformMutex.mutex);
++                    waveformRequests = std::move(p.waveformMutex.requests);
++                    p.waveformMutex.cache.clear();
++                }
++                for (auto& request : thumbnailRequests)
++                {
++                    request->promise.set_value(nullptr);
++                }
++                for (auto& request : waveformRequests)
++                {
++                    request->promise.set_value(nullptr);
++                }
++            }
++        }
++
++        bool ThumbnailSystem::areRequestsEnabled() const
++        {
++            return _p->requestsEnabled;
++        }
++
+         const ThumbnailCacheOptions& ThumbnailSystem::getCacheOptions() const
+         {
+             return _p->cacheOptions->get();
+@@ -649,14 +748,23 @@
+ 
+         void ThumbnailSystem::_thumbnailRun()
+         {
++            _thumbnailRunWorker(0);
++        }
++
++        void ThumbnailSystem::_thumbnailRunWorker(int threadIndex)
++        {
+             FTK_P();
++            Private::ThumbnailThread& worker =
++                0 == threadIndex ?
++                p.thumbnailThread :
++                p.thumbnailThread2;
+             tl::IOOptions ioOptions;
+-            while (p.thumbnailThread.running)
++            while (worker.running)
+             {
+                 std::shared_ptr<Private::ThumbnailRequest> request;
+                 {
+                     std::unique_lock<std::mutex> lock(p.thumbnailMutex.mutex);
+-                    if (p.thumbnailThread.cv.wait_for(
++                    if (p.thumbnailMutex.cv.wait_for(
+                         lock,
+                         std::chrono::milliseconds(5),
+                         [this]
+@@ -664,15 +772,31 @@
+                             return !_p->thumbnailMutex.requests.empty();
+                         }))
+                     {
+-                        request = p.thumbnailMutex.requests.front();
+-                        p.thumbnailMutex.requests.pop_front();
++                        auto it = p.thumbnailMutex.requests.begin();
++                        if (p.thumbnailMutex.requests.size() > 1 &&
++                            !p.thumbnailMutex.lastPath.empty())
++                        {
++                            for (auto j = p.thumbnailMutex.requests.begin();
++                                j != p.thumbnailMutex.requests.end();
++                                ++j)
++                            {
++                                if ((*j)->path.get() != p.thumbnailMutex.lastPath)
++                                {
++                                    it = j;
++                                    break;
++                                }
++                            }
++                        }
++                        request = *it;
++                        p.thumbnailMutex.lastPath = request->path.get();
++                        p.thumbnailMutex.requests.erase(it);
+                     }
+                 }
+                 if (request)
+                 {
+                     if (request->options != ioOptions)
+                     {
+-                        p.thumbnailThread.ioCache.clear();
++                        worker.ioCache.clear();
+                         ioOptions = request->options;
+                     }
+ 
+@@ -680,18 +804,16 @@
+                     try
+                     {
+                         const std::string& fileName = request->path.get();
+-                        //std::cout << "thumbnail request: " << fileName << " " <<
+-                        //    request->time << std::endl;
+                         std::shared_ptr<IRead> read;
+                         auto context = p.context.lock();
+-                        if (!p.thumbnailThread.ioCache.get(fileName, read))
++                        if (!worker.ioCache.get(fileName, read))
+                         {
+                             auto ioSystem = context->getSystem<ReadSystem>();
+                             read = ioSystem->read(
+                                 request->path,
+                                 request->memoryRead,
+                                 request->options);
+-                            p.thumbnailThread.ioCache.add(fileName, read);
++                            worker.ioCache.add(fileName, read);
+                         }
+                         if (read)
+                         {
+@@ -704,11 +826,11 @@
+                             }
+                             ftk::gl::OffscreenBufferOptions options;
+                             if (ftk::gl::doCreate(
+-                                p.thumbnailThread.buffer,
++                                worker.buffer,
+                                 size,
+                                 ftk::gl::TextureType::RGBA_U8))
+                             {
+-                                p.thumbnailThread.buffer = ftk::gl::OffscreenBuffer::create(
++                                worker.buffer = ftk::gl::OffscreenBuffer::create(
+                                     size,
+                                     ftk::gl::TextureType::RGBA_U8);
+                             }
+@@ -717,21 +839,21 @@
+                                 request->time :
+                                 info.videoTime.start_time();
+                             const auto videoData = read->readVideo(time, request->options).get();
+-                            if (p.thumbnailThread.render &&
+-                                p.thumbnailThread.buffer &&
++                            if (worker.render &&
++                                worker.buffer &&
+                                 videoData.image &&
+-                                p.thumbnailThread.running)
++                                worker.running)
+                             {
+-                                ftk::gl::OffscreenBufferBinding binding(p.thumbnailThread.buffer);
+-                                p.thumbnailThread.render->begin(size);
++                                ftk::gl::OffscreenBufferBinding binding(worker.buffer);
++                                worker.render->begin(size);
+                                 ftk::ImageOptions imageOptions;
+                                 imageOptions.cache = false;
+-                                p.thumbnailThread.render->IRender::drawImage(
++                                worker.render->IRender::drawImage(
+                                     videoData.image,
+                                     ftk::Box2I(0, 0, size.w, size.h),
+                                     ftk::Color4F(1.F, 1.F, 1.F),
+                                     imageOptions);
+-                                p.thumbnailThread.render->end();
++                                worker.render->end();
+                                 image = ftk::Image::create(
+                                     ftk::ImageInfo(size.w, size.h, ftk::ImageType::RGBA_U8));
+                                 glPixelStorei(GL_PACK_ALIGNMENT, 1);
+@@ -773,22 +895,22 @@
+                             if (size.isValid())
+                             {
+                                 if (ftk::gl::doCreate(
+-                                    p.thumbnailThread.buffer,
++                                    worker.buffer,
+                                     size,
+                                     ftk::gl::TextureType::RGBA_U8))
+                                 {
+-                                    p.thumbnailThread.buffer = ftk::gl::OffscreenBuffer::create(
++                                    worker.buffer = ftk::gl::OffscreenBuffer::create(
+                                         size,
+                                         ftk::gl::TextureType::RGBA_U8);
+                                 }
+-                                if (p.thumbnailThread.render && p.thumbnailThread.buffer)
++                                if (worker.render && worker.buffer)
+                                 {
+-                                    ftk::gl::OffscreenBufferBinding binding(p.thumbnailThread.buffer);
+-                                    p.thumbnailThread.render->begin(size);
+-                                    p.thumbnailThread.render->drawVideo(
++                                    ftk::gl::OffscreenBufferBinding binding(worker.buffer);
++                                    worker.render->begin(size);
++                                    worker.render->drawVideo(
+                                         { videoData },
+                                         { ftk::Box2I(0, 0, size.w, size.h) });
+-                                    p.thumbnailThread.render->end();
++                                    worker.render->end();
+                                     ftk::ImageInfo info(size.w,
+                                         size.h,
+                                         ftk::ImageType::RGBA_U8);
+diff -ruN a/lib/tlRender/UI/ThumbnailSystem.h b/lib/tlRender/UI/ThumbnailSystem.h
+--- a/lib/tlRender/UI/ThumbnailSystem.h	2026-05-21 01:41:50
++++ b/lib/tlRender/UI/ThumbnailSystem.h	2026-05-21 01:41:50
+@@ -113,6 +113,10 @@
+             //! Cancel pending requests.
+             TL_API void cancelRequests(const std::vector<uint64_t>&);
+ 
++            //! Enable or disable thumbnail and waveform decode requests.
++            TL_API void setRequestsEnabled(bool);
++            TL_API bool areRequestsEnabled() const;
++
+             //! Get the cache options.
+             TL_API const ThumbnailCacheOptions& getCacheOptions() const;
+ 
+@@ -134,6 +138,7 @@
+             void _infoCancel();
+             void _thumbnailCancel();
+             void _waveformCancel();
++            void _thumbnailRunWorker(int threadIndex);
+ 
+             FTK_PRIVATE();
+         };
+diff -ruN a/lib/tlRender/UI/TimelineItem.cpp b/lib/tlRender/UI/TimelineItem.cpp
+--- a/lib/tlRender/UI/TimelineItem.cpp	2026-05-21 01:41:51
++++ b/lib/tlRender/UI/TimelineItem.cpp	2026-05-21 01:41:51
+@@ -163,7 +163,28 @@
+                 p.player->observeCurrentTime(),
+                 [this](const OTIO_NS::RationalTime& value)
+                 {
+-                    _p->currentTime = value;
++                    if (_p->player &&
++                        _p->player->isStopped() &&
++                        _p->player->getCurrentVideo().empty())
++                    {
++                        _p->currentTime = value;
++                        setDrawUpdate();
++                    }
++                });
++
++            p.currentVideoObserver = ftk::ListObserver<VideoFrame>::create(
++                p.player->observeCurrentVideo(),
++                [this](const std::vector<VideoFrame>& value)
++                {
++                    if (!value.empty() &&
++                        !value.front().time.strictly_equal(invalidTime))
++                    {
++                        _p->currentTime = value.front().time;
++                    }
++                    else if (_p->player && _p->player->isStopped())
++                    {
++                        _p->currentTime = _p->player->getCurrentTime();
++                    }
+                     setDrawUpdate();
+                 });
+ 
+@@ -497,7 +518,14 @@
+             bool out = true;
+             if (_displayOptions.minimize)
+             {
+-                out &= index == p.firstVideoTrack || index == p.firstAudioTrack;
++                if (CacheDisplay::VideoOnly == _displayOptions.cacheDisplay)
++                {
++                    out &= index == p.firstVideoTrack;
++                }
++                else
++                {
++                    out &= index == p.firstVideoTrack || index == p.firstAudioTrack;
++                }
+             }
+             return out;
+         }
+@@ -511,6 +539,43 @@
+             return labelMaxSize;
+         }
+ 
++        bool TimelineItem::_getCurrentTimeLabel(
++            const std::shared_ptr<ftk::FontSystem>& fontSystem,
++            std::string& outLabel,
++            ftk::Box2I& outRect) const
++        {
++            FTK_P();
++            if (p.currentTime.is_invalid_time())
++            {
++                return false;
++            }
++
++            const ftk::Box2I& g = getGeometry();
++            const ftk::V2I pos(
++                timeToPos(p.currentTime),
++                p.size.scrollArea.min.y +
++                g.min.y);
++
++            outLabel = _data->timeUnitsModel->getLabel(p.currentTime);
++            ftk::V2I labelPos(
++                pos.x + p.size.border * 2 + p.size.margin,
++                pos.y + p.size.margin);
++            const ftk::Size2I labelSize = fontSystem->getSize(outLabel, p.size.fontInfo);
++            const ftk::Box2I g2(p.size.scrollArea.min + g.min, p.size.scrollArea.size());
++            if (labelPos.x + labelSize.w > g2.max.x)
++            {
++                const ftk::V2I labelPos2(
++                    pos.x - p.size.border * 2 - p.size.margin - labelSize.w,
++                    pos.y + p.size.margin);
++                if (labelPos2.x > g2.min.x)
++                {
++                    labelPos = labelPos2;
++                }
++            }
++            outRect = ftk::Box2I(labelPos, labelSize);
++            return true;
++        }
++
+         double TimelineItem::_getSecondsInc(
+             const std::shared_ptr<ftk::FontSystem>& fontSystem)
+         {
+@@ -716,23 +781,38 @@
+                 const double seconds = _getSecondsInc(event.fontSystem);
+                 if (seconds > 0.0)
+                 {
+-                    const ftk::Size2I labelMaxSize = _getLabelMaxSize(event.fontSystem);
++                    std::string currentLabel;
++                    ftk::Box2I currentLabelRect;
++                    const bool hasCurrentLabel =
++                        _getCurrentTimeLabel(event.fontSystem, currentLabel, currentLabelRect);
++                    const ftk::Box2I currentLabelRectPadded(
++                        currentLabelRect.min.x - p.size.margin,
++                        currentLabelRect.min.y,
++                        currentLabelRect.w() + p.size.margin * 2,
++                        currentLabelRect.h());
+                     const double t0 = std::floor(posToTime(drawRect.min.x).rescaled_to(1.0).value() / seconds) * seconds;
+                     const double t1 = std::ceil(posToTime(drawRect.max.x).rescaled_to(1.0).value() / seconds) * seconds;
+                     for (double t = t0; t <= t1; t += seconds)
+                     {
+                         const int x = timeToPos(OTIO_NS::RationalTime(t, 1.0));
+                         const std::string label = _data->timeUnitsModel->getLabel(OTIO_NS::RationalTime(t, 1.0).rescaled_to(rate));
++                        const ftk::Box2I labelRect(
++                            x +
++                            p.size.border +
++                            p.size.margin,
++                            p.size.scrollArea.min.y +
++                            g.min.y +
++                            p.size.margin,
++                            event.fontSystem->getSize(label, p.size.fontInfo).w,
++                            p.size.fontMetrics.lineHeight);
++                        if (hasCurrentLabel && ftk::intersects(labelRect, currentLabelRectPadded))
++                        {
++                            continue;
++                        }
+                         event.render->drawText(
+                             event.fontSystem->getGlyphs(label, p.size.fontInfo),
+                             p.size.fontMetrics,
+-                            ftk::V2I(
+-                                x +
+-                                p.size.border +
+-                                p.size.margin,
+-                                p.size.scrollArea.min.y +
+-                                g.min.y +
+-                                p.size.margin),
++                            labelRect.min,
+                             event.style->getColorRole(ftk::ColorRole::TextDisabled));
+                     }
+                 }
+@@ -829,27 +909,16 @@
+                         g.h()),
+                     event.style->getColorRole(ftk::ColorRole::Red));
+ 
+-                const std::string label = _data->timeUnitsModel->getLabel(p.currentTime);
+-                ftk::V2I labelPos(
+-                    pos.x + p.size.border * 2 + p.size.margin,
+-                    pos.y + p.size.margin);
+-                const ftk::Size2I labelSize = event.fontSystem->getSize(label, p.size.fontInfo);
+-                const ftk::Box2I g2(p.size.scrollArea.min + g.min, p.size.scrollArea.size());
+-                if (labelPos.x + labelSize.w > g2.max.x)
++                std::string label;
++                ftk::Box2I labelRect;
++                if (_getCurrentTimeLabel(event.fontSystem, label, labelRect))
+                 {
+-                    const ftk::V2I labelPos2(
+-                        pos.x - p.size.border * 2 - p.size.margin - labelSize.w,
+-                        pos.y + p.size.margin);
+-                    if (labelPos2.x > g2.min.x)
+-                    {
+-                        labelPos = labelPos2;
+-                    }
++                    event.render->drawText(
++                        event.fontSystem->getGlyphs(label, p.size.fontInfo),
++                        p.size.fontMetrics,
++                        labelRect.min,
++                        event.style->getColorRole(ftk::ColorRole::Text));
+                 }
+-                event.render->drawText(
+-                    event.fontSystem->getGlyphs(label, p.size.fontInfo),
+-                    p.size.fontMetrics,
+-                    labelPos,
+-                    event.style->getColorRole(ftk::ColorRole::Text));
+             }
+         }
+ 
+diff -ruN a/lib/tlRender/UI/VideoClipItem.cpp b/lib/tlRender/UI/VideoClipItem.cpp
+--- a/lib/tlRender/UI/VideoClipItem.cpp	2026-05-21 01:41:51
++++ b/lib/tlRender/UI/VideoClipItem.cpp	2026-05-21 01:41:51
+@@ -15,6 +15,45 @@
+ {
+     namespace ui
+     {
++        namespace
++        {
++            //! Timeline filmstrips use a separate decode path from playback.
++            IOOptions thumbnailIOOptions(const IOOptions& value)
++            {
++                IOOptions out = value;
++                out["FFmpeg/HardwareDecode"] = "Off";
++                out["FFmpeg/ThreadCount"] = "2";
++                return out;
++            }
++
++            constexpr size_t maxPendingThumbnailRequests = 12;
++            constexpr int maxFilmstripCells = 10;
++
++            int thumbnailDecodeHeight(int displayHeight)
++            {
++                return std::max(48, (displayHeight * 3) / 4);
++            }
++
++            void getFilmstripLayout(
++                int timelineWidth,
++                int idealThumbnailWidth,
++                int& outCellCount,
++                int& outCellWidth)
++            {
++                outCellCount = 1;
++                outCellWidth = timelineWidth;
++                if (timelineWidth <= 0 || idealThumbnailWidth <= 0)
++                {
++                    return;
++                }
++                outCellCount = std::max(
++                    1,
++                    (timelineWidth + idealThumbnailWidth - 1) / idealThumbnailWidth);
++                outCellCount = std::min(outCellCount, maxFilmstripCells);
++                outCellWidth = std::max(1, timelineWidth / outCellCount);
++            }
++        }
++
+         struct VideoClipItem::Private
+         {
+             std::string clipName;
+@@ -233,19 +272,16 @@
+             const int m = _getMargin();
+             const int lineHeight = _getLineHeight();
+ 
+-            const ftk::Box2I g2(
++            const ftk::Box2I strip(
+                 g.min.x,
+                 g.min.y +
+                 (!_displayOptions.minimize ? (lineHeight + m * 2) : 0),
+                 g.w(),
+                 _displayOptions.thumbnailHeight);
+-            render->drawRect(
+-                g2,
+-                ftk::Color4F(0.F, 0.F, 0.F));
+             const ftk::ClipRectEnabledState clipRectEnabledState(render);
+             const ftk::ClipRectState clipRectState(render);
+             render->setClipRectEnabled(true);
+-            render->setClipRect(ftk::intersect(g2, clipRectState.getClipRect()));
++            render->setClipRect(ftk::intersect(strip, clipRectState.getClipRect()));
+             render->setOCIOOptions(_displayOptions.ocio);
+             render->setLUTOptions(_displayOptions.lut);
+ 
+@@ -256,94 +292,106 @@
+             // Get thumbnail information.
+             if (!p.ioInfo.has_value() &&
+                 !p.infoRequest.future.valid() &&
+-                ftk::intersects(g, clipRect))
++                ftk::intersects(strip, clipRect))
+             {
+                 p.infoRequest = p.thumbnailSystem->getInfo(
+                     p.path,
+                     p.memRead,
+-                    p.ioOptions);
++                    thumbnailIOOptions(p.ioOptions));
+             }
+ 
+             std::map<OTIO_NS::RationalTime, std::shared_ptr<ftk::Image> > thumbnails;
+-            const int thumbnailWidth =
++            const int idealThumbnailWidth =
+                 (_displayOptions.thumbnails && p.ioInfo.has_value() && !p.ioInfo->video.empty()) ?
+                 static_cast<int>(_displayOptions.thumbnailHeight * ftk::aspectRatio(p.ioInfo->video[0].size)) :
+                 0;
+-            if (thumbnailWidth > 0)
++            if (idealThumbnailWidth > 0)
+             {
+                 const int w = g.w();
+-                for (int x = 0; x < w; x += thumbnailWidth)
++                int cellCount = 0;
++                int cellWidth = 0;
++                getFilmstripLayout(w, idealThumbnailWidth, cellCount, cellWidth);
++                const int decodeHeight = thumbnailDecodeHeight(_displayOptions.thumbnailHeight);
++                for (int cellIndex = 0; cellIndex < cellCount; ++cellIndex)
+                 {
++                    const int x = cellIndex * cellWidth;
++                    const int cellW = (cellIndex + 1 == cellCount) ? (w - x) : cellWidth;
+                     const ftk::Box2I box(
+-                        g.min.x +
+-                        x,
+-                        g.min.y +
+-                        (!_displayOptions.minimize ? (lineHeight + m * 2) : 0),
+-                        thumbnailWidth,
+-                        _displayOptions.thumbnailHeight);
+-                    if (ftk::intersects(box, clipRect))
++                        strip.min.x + x,
++                        strip.min.y,
++                        cellW,
++                        strip.h());
++                    if (!ftk::intersects(box, clipRect))
+                     {
+-                        const OTIO_NS::RationalTime time = OTIO_NS::RationalTime(
+-                            _timeRange.start_time().value() +
+-                            (w > 1 ? (x / static_cast<double>(w - 1)) : 0) *
+-                            _timeRange.duration().rescaled_to(_timeRange.start_time()).value(),
+-                            _timeRange.start_time().rate()).
+-                            floor();
+-                        OTIO_NS::TimeRange trimmedRange = _trimmedRange;
+-                        if (_data->options.compat &&
+-                            _availableRange.start_time() > p.ioInfo->videoTime.start_time())
++                        continue;
++                    }
++                    const OTIO_NS::RationalTime time = OTIO_NS::RationalTime(
++                        _timeRange.start_time().value() +
++                        (w > 1 ? ((x + cellW / 2) / static_cast<double>(w)) : 0) *
++                        _timeRange.duration().rescaled_to(_timeRange.start_time()).value(),
++                        _timeRange.start_time().rate()).
++                        floor();
++                    OTIO_NS::TimeRange trimmedRange = _trimmedRange;
++                    if (_data->options.compat &&
++                        _availableRange.start_time() > p.ioInfo->videoTime.start_time())
++                    {
++                        //! \bug If the available range is greater than the media time,
++                        //! assume the media time is wrong (e.g., Picchu) and
++                        //! compensate for it.
++                        trimmedRange = OTIO_NS::TimeRange(
++                            trimmedRange.start_time() - _availableRange.start_time(),
++                            trimmedRange.duration());
++                    }
++                    const OTIO_NS::RationalTime mediaTime = toVideoMediaTime(
++                        time,
++                        _timeRange,
++                        trimmedRange,
++                        p.ioInfo->videoTime.duration().rate());
++                    std::shared_ptr<ftk::Image> image;
++                    const auto thumbIt = p.thumbnails.find(mediaTime);
++                    if (thumbIt != p.thumbnails.end())
++                    {
++                        image = thumbIt->second;
++                    }
++                    else if (!p.ioInfo->video.empty())
++                    {
++                        const auto k = p.thumbnailRequests.find(mediaTime);
++                        if (k == p.thumbnailRequests.end() &&
++                            p.thumbnailRequests.size() < maxPendingThumbnailRequests)
+                         {
+-                            //! \bug If the available range is greater than the media time,
+-                            //! assume the media time is wrong (e.g., Picchu) and
+-                            //! compensate for it.
+-                            trimmedRange = OTIO_NS::TimeRange(
+-                                trimmedRange.start_time() - _availableRange.start_time(),
+-                                trimmedRange.duration());
+-                        }
+-                        const OTIO_NS::RationalTime mediaTime = toVideoMediaTime(
+-                            time,
+-                            _timeRange,
+-                            trimmedRange,
+-                            p.ioInfo->videoTime.duration().rate());
+-                        std::shared_ptr<ftk::Image> image;
+-                        const auto i = p.thumbnails.find(mediaTime);
+-                        if (i != p.thumbnails.end())
+-                        {
+-                            image = i->second;
+-                        }
+-                        else if (!p.ioInfo->video.empty())
+-                        {
+-                            const auto k = p.thumbnailRequests.find(mediaTime);
+-                            if (k == p.thumbnailRequests.end())
++                            auto request = p.thumbnailSystem->getThumbnail(
++                                p.path,
++                                p.memRead,
++                                decodeHeight,
++                                mediaTime,
++                                thumbnailIOOptions(p.ioOptions));
++                            if (request.future.valid() &&
++                                request.future.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+                             {
+-                                auto request = p.thumbnailSystem->getThumbnail(
+-                                    p.path,
+-                                    p.memRead,
+-                                    _displayOptions.thumbnailHeight,
+-                                    mediaTime,
+-                                    p.ioOptions);
+-                                if (request.future.valid() &&
+-                                    request.future.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+-                                {
+-                                    image = request.future.get();
+-                                }
+-                                else
+-                                {
+-                                    p.thumbnailRequests[mediaTime] = std::move(request);
+-                                }
++                                image = request.future.get();
+                             }
++                            else
++                            {
++                                p.thumbnailRequests[mediaTime] = std::move(request);
++                            }
+                         }
+-                        if (image)
+-                        {
+-                            ftk::ImageOptions imageOptions;
+-                            imageOptions.cache = false;
+-                            render->drawImage(
+-                                image,
+-                                box,
+-                                ftk::Color4F(1.F, 1.F, 1.F),
+-                                imageOptions);
+-                            thumbnails[mediaTime] = image;
+-                        }
++                    }
++                    if (image)
++                    {
++                        ftk::ImageOptions imageOptions;
++                        imageOptions.cache = false;
++                        render->drawImage(
++                            image,
++                            box,
++                            ftk::Color4F(1.F, 1.F, 1.F),
++                            imageOptions);
++                        thumbnails[mediaTime] = image;
++                    }
++                    else
++                    {
++                        render->drawRect(
++                            box,
++                            ftk::Color4F(.12F, .12F, .12F));
+                     }
+                 }
+             }

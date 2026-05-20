@@ -18,7 +18,9 @@ namespace djv
 
             auto tmp = actions;
             addAction(tmp["Open"]);
+            addAction(tmp["OpenB"]);
             addAction(tmp["OpenAudio"]);
+            addAction(tmp["DualMode"]);
             addAction(tmp["Close"]);
             addAction(tmp["CloseAll"]);
             addAction(tmp["Reload"]);

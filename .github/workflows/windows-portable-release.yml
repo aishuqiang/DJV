@@ -1,0 +1,62 @@
+name: Windows Portable Release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows-portable:
+    runs-on: windows-latest
+
+    env:
+      JOBS: 4
+      TLRENDER_NET: OFF
+      TLRENDER_OCIO: ON
+      TLRENDER_JPEG: ON
+      TLRENDER_TIFF: ON
+      TLRENDER_EXR: ON
+      TLRENDER_AOM: OFF
+      TLRENDER_SVTAV1: OFF
+      TLRENDER_FFMPEG: ON
+      TLRENDER_FFMPEG_MINIMAL: ON
+      TLRENDER_FFMPEG_PLUGIN: ON
+      TLRENDER_FFMPEG_CMD: ON
+      TLRENDER_NASM: ON
+      TLRENDER_OIIO: ON
+      TLRENDER_USD: OFF
+      FTK_API: GL_4_1
+      BUILD_SHARED_LIBS: OFF
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        path: djv
+        submodules: recursive
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - uses: ilammy/setup-nasm@v1
+
+    - name: Setup environment
+      shell: cmd
+      run: |
+        echo %CD%\install-Release\bin>> %GITHUB_PATH%
+        cmake --version
+        python --version
+
+    - name: Super Build
+      shell: cmd
+      run: |
+        djv\etc\Windows\windows-sbuild.bat djv Release
+
+    - name: Build portable ZIP
+      shell: cmd
+      run: |
+        djv\etc\Windows\windows-portable-package.bat djv Release
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: DJV-Windows-Portable-x64
+        path: build-Release/djv-*-windows-*.zip
+        if-no-files-found: error

@@ -26,131 +26,121 @@ namespace djv
         {
             IActions::_init(context, app, "Playback");
             FTK_P();
+            auto appWeak = std::weak_ptr<App>(app);
 
             _actions["Stop"] = ftk::Action::create(
                 "Stop",
                 "PlaybackStop",
-                [this]
+                [appWeak]
                 {
-                    FTK_P();
-                    if (p.player)
+                    if (auto app = appWeak.lock())
                     {
-                        p.player->stop();
+                        app->transportStop();
                     }
                 });
 
             _actions["Forward"] = ftk::Action::create(
                 "Forward",
                 "PlaybackForward",
-                [this]
+                [appWeak]
                 {
-                    FTK_P();
-                    if (p.player)
+                    if (auto app = appWeak.lock())
                     {
-                        p.player->forward();
+                        app->transportForward();
                     }
                 });
 
             _actions["Reverse"] = ftk::Action::create(
                 "Reverse",
                 "PlaybackReverse",
-                [this]
+                [appWeak]
                 {
-                    FTK_P();
-                    if (p.player)
+                    if (auto app = appWeak.lock())
                     {
-                        p.player->reverse();
+                        app->transportReverse();
                     }
                 });
 
             _actions["Toggle"] = ftk::Action::create(
                 "Toggle Playback",
-                [this]
+                [appWeak]
                 {
-                    FTK_P();
-                    if (p.player)
+                    if (auto app = appWeak.lock())
                     {
-                        p.player->togglePlayback();
+                        app->transportTogglePlayback();
                     }
                 });
 
             _actions["JumpBack1s"] = ftk::Action::create(
                 "Jump Back 1s",
-                [this]
+                [appWeak]
                 {
-                    FTK_P();
-                    if (p.player)
+                    if (auto app = appWeak.lock())
                     {
-                        p.player->timeAction(tl::TimeAction::JumpBack1s);
+                        app->transportTimeAction(tl::TimeAction::JumpBack1s);
                     }
                 });
 
             _actions["JumpBack10s"] = ftk::Action::create(
                 "Jump Back 10s",
-                [this]
+                [appWeak]
                 {
-                    FTK_P();
-                    if (p.player)
+                    if (auto app = appWeak.lock())
                     {
-                        p.player->timeAction(tl::TimeAction::JumpBack10s);
+                        app->transportTimeAction(tl::TimeAction::JumpBack10s);
                     }
                 });
 
             _actions["JumpForward1s"] = ftk::Action::create(
                 "Jump Forward 1s",
-                [this]
+                [appWeak]
                 {
-                    FTK_P();
-                    if (p.player)
+                    if (auto app = appWeak.lock())
                     {
-                        p.player->timeAction(tl::TimeAction::JumpForward1s);
+                        app->transportTimeAction(tl::TimeAction::JumpForward1s);
                     }
                 });
 
             _actions["JumpForward10s"] = ftk::Action::create(
                 "Jump Forward 10s",
-                [this]
+                [appWeak]
                 {
-                    FTK_P();
-                    if (p.player)
+                    if (auto app = appWeak.lock())
                     {
-                        p.player->timeAction(tl::TimeAction::JumpForward10s);
+                        app->transportTimeAction(tl::TimeAction::JumpForward10s);
                     }
                 });
 
             _actions["Loop"] = ftk::Action::create(
                 "Playback Loop",
                 "PlaybackLoop",
-                [this]
+                [appWeak]
                 {
-                    FTK_P();
-                    if (p.player)
+                    if (auto app = appWeak.lock())
                     {
-                        p.player->setLoop(tl::Loop::Loop);
+                        app->transportSetLoop(tl::Loop::Loop);
                     }
                 });
 
             _actions["Once"] = ftk::Action::create(
                 "Playback Once",
                 "PlaybackOnce",
-                [this]
+                [appWeak]
                 {
-                    FTK_P();
-                    if (p.player)
+                    if (auto app = appWeak.lock())
                     {
-                        p.player->setLoop(tl::Loop::Once);
+                        app->transportSetLoop(tl::Loop::Once);
                     }
                 });
 
             _actions["PingPong"] = ftk::Action::create(
                 "Playback Ping-Pong",
                 "PlaybackPingPong",
-                [this]
+                [appWeak]
                 {
-                    FTK_P();
-                    if (p.player)
+                    if (auto app = appWeak.lock())
                     {
-                        p.player->setLoop(tl::Loop::PingPong);
+                        app->transportSetLoop(tl::Loop::PingPong);
                     }
                 });
 

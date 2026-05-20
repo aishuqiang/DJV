@@ -4,6 +4,7 @@
 #pragma once
 
 #include <tlRender/Timeline/CompareOptions.h>
+#include <tlRender/Timeline/Player.h>
 
 #include <ftk/Core/ObservableList.h>
 #include <ftk/Core/Observable.h>
@@ -18,6 +19,18 @@ namespace djv
 {
     namespace models
     {
+        enum class DualPlaybackMode
+        {
+            Independent,
+            Sync
+        };
+
+        enum class DisplayMode
+        {
+            Single,
+            Dual
+        };
+
         //! Files model item.
         struct FilesModelItem
         {
@@ -30,6 +43,9 @@ namespace djv
             double                   speed       = -1.0;
             OTIO_NS::RationalTime    currentTime = tl::invalidTime;
             OTIO_NS::TimeRange       inOutRange  = tl::invalidTimeRange;
+            OTIO_NS::RationalTime    forwardStartTime = tl::invalidTime;
+            OTIO_NS::RationalTime    reverseStartTime = tl::invalidTime;
+            tl::Playback             playback = tl::Playback::Forward;
 
             bool                     newFile = true;
         };
@@ -90,7 +106,10 @@ namespace djv
             std::shared_ptr<ftk::IObservableList<std::shared_ptr<FilesModelItem> > > observeActive() const;
 
             //! Add a file.
-            void add(const std::shared_ptr<FilesModelItem>&);
+            void add(
+                const std::shared_ptr<FilesModelItem>&,
+                bool makeCurrent = true,
+                bool assignCurrentWhenEmpty = true);
 
             //! Close the current "A" file.
             void close();
@@ -166,6 +185,24 @@ namespace djv
 
             //! Set the compare time mode.
             void setCompareTime(tl::CompareTime);
+
+            //! Get the video display mode.
+            DisplayMode getDisplayMode() const;
+
+            //! Observe the video display mode.
+            std::shared_ptr<ftk::IObservable<DisplayMode> > observeDisplayMode() const;
+
+            //! Set the video display mode.
+            void setDisplayMode(DisplayMode);
+
+            //! Get the dual playback mode used by split compare layouts.
+            DualPlaybackMode getDualPlaybackMode() const;
+
+            //! Observe the dual playback mode used by split compare layouts.
+            std::shared_ptr<ftk::IObservable<DualPlaybackMode> > observeDualPlaybackMode() const;
+
+            //! Set the dual playback mode used by split compare layouts.
+            void setDualPlaybackMode(DualPlaybackMode);
 
         private:
             int _getIndex(const std::shared_ptr<FilesModelItem>&) const;

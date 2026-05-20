@@ -16,6 +16,7 @@ namespace djv
         struct SpeedPopup::Private
         {
             std::vector<double> speeds;
+            std::vector<std::string> labels;
             std::shared_ptr<ftk::ListItemsWidget> listWidget;
             std::shared_ptr<ftk::DoubleEdit> speedEdit;
             std::function<void(double)> callback;
@@ -33,30 +34,18 @@ namespace djv
                 parent);
             FTK_P();
 
-            p.speeds =
+            p.speeds.push_back(defaultSpeed);
+            p.labels.push_back("1x");
+            for (int i = 2; i <= 3; ++i)
             {
-                120.0,
-                96.0,
-                90.0,
-                60.0,
-                60000.0 / 1001.0,
-                50.0,
-                48.0,
-                30.0,
-                30000.0 / 1001.0,
-                25.0,
-                24.0,
-                24000.0 / 1001.0,
-                18.0,
-                16.0,
-                15.0,
-                12.0,
-                6.0,
-                3.0,
-                1.0,
-
-                defaultSpeed
-            };
+                p.speeds.push_back(defaultSpeed * i);
+                p.labels.push_back(ftk::Format("{0}x").arg(i));
+            }
+            for (int i = 2; i <= 3; ++i)
+            {
+                p.speeds.push_back(defaultSpeed / i);
+                p.labels.push_back(ftk::Format("1/{0}x").arg(i));
+            }
 
             p.listWidget = ftk::ListItemsWidget::create(context, ftk::ButtonGroupType::Click);
 
@@ -129,9 +118,7 @@ namespace djv
             const size_t size = p.speeds.size();
             for (size_t i = 0; i < size; ++i)
             {
-                items.push_back((size - 1) == i ?
-                    ftk::Format("Default: {0}").arg(p.speeds[i], 2) :
-                    ftk::Format("{0}").arg(p.speeds[i], 2));
+                items.push_back(p.labels[i]);
             }
             p.listWidget->setItems(items);
         }

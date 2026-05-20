@@ -361,22 +361,18 @@ jobs:
         echo CTEST_OUTPUT_ON_FAILURE=1 >> %GITHUB_ENV%
         cmake --version
         python --version
-        winget install NSIS.NSIS --accept-package-agreements --accept-source-agreements --disable-interactivity
-
     - name: Super Build
       shell: cmd
       run: |
         djv\etc\Windows\windows-sbuild.bat djv Release
 
-    - name: Build and package DJV
+    - name: Build portable ZIP
       shell: cmd
       run: |
-        djv\etc\Windows\windows-package.bat djv Release
+        djv\etc\Windows\windows-portable-package.bat djv Release
 
     - uses: actions/upload-artifact@v7
       with:
-        name: DJV-Windows-Packages
-        path: |
-          build-Release\djv-*.exe
-          build-Release\djv-*.zip
-        archive: true
+        name: DJV-Windows-Portable-x64
+        path: build-Release\djv-*-windows-*.zip
+        archive: false

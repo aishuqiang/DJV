@@ -14,6 +14,8 @@ namespace djv
         {
             std::shared_ptr<ftk::ListObserver<std::shared_ptr<models::FilesModelItem> > > filesObserver;
             std::shared_ptr<ftk::Observer<std::shared_ptr<models::FilesModelItem> > > aObserver;
+            std::shared_ptr<ftk::ListObserver<std::shared_ptr<models::FilesModelItem> > > bObserver;
+            std::shared_ptr<ftk::Observer<models::DisplayMode> > displayModeObserver;
         };
 
         void FileActions::_init(
@@ -25,7 +27,7 @@ namespace djv
 
             auto appWeak = std::weak_ptr<App>(app);
             _actions["Open"] = ftk::Action::create(
-                "Open",
+                "打开视频",
                 "FileOpen",
                 [appWeak]
                 {
@@ -35,8 +37,19 @@ namespace djv
                     }
                 });
 
+            _actions["OpenB"] = ftk::Action::create(
+                "打开 B 视频",
+                "FileOpen",
+                [appWeak]
+                {
+                    if (auto app = appWeak.lock())
+                    {
+                        app->openToBDialog();
+                    }
+                });
+
             _actions["OpenAudio"] = ftk::Action::create(
-                "Open With Audio",
+                "打开视频并指定音频",
                 "FileOpenAudio",
                 [appWeak]
                 {
@@ -46,8 +59,30 @@ namespace djv
                     }
                 });
 
+            _actions["SingleMode"] = ftk::Action::create(
+                "单视频模式",
+                "CompareA",
+                [appWeak]
+                {
+                    if (auto app = appWeak.lock())
+                    {
+                        app->getFilesModel()->setDisplayMode(models::DisplayMode::Single);
+                    }
+                });
+
+            _actions["DualMode"] = ftk::Action::create(
+                "双视频模式",
+                "CompareHorizontal",
+                [appWeak]
+                {
+                    if (auto app = appWeak.lock())
+                    {
+                        app->getFilesModel()->setDisplayMode(models::DisplayMode::Dual);
+                    }
+                });
+
             _actions["Close"] = ftk::Action::create(
-                "Close",
+                "关闭当前视频",
                 "FileClose",
                 [appWeak]
                 {
@@ -58,7 +93,7 @@ namespace djv
                 });
 
             _actions["CloseAll"] = ftk::Action::create(
-                "Close All",
+                "关闭全部视频",
                 "FileCloseAll",
                 [appWeak]
                 {
@@ -69,7 +104,7 @@ namespace djv
                 });
 
             _actions["Reload"] = ftk::Action::create(
-                "Reload",
+                "重新加载",
                 "FileReload",
                 [appWeak]
                 {
@@ -80,7 +115,7 @@ namespace djv
                 });
 
             _actions["Next"] = ftk::Action::create(
-                "Next",
+                "下一个 A 视频",
                 "Next",
                 [appWeak]
                 {
@@ -91,7 +126,7 @@ namespace djv
                 });
 
             _actions["Prev"] = ftk::Action::create(
-                "Previous",
+                "上一个 A 视频",
                 "Prev",
                 [appWeak]
                 {
@@ -135,13 +170,16 @@ namespace djv
 
             _tooltips =
             {
-                { "Open", "Open a file." },
-                { "OpenAudio", "Open a file with a separate audio file." },
-                { "Close", "Close the current file." },
-                { "CloseAll", "Close all files." },
-                { "Reload", "Reload the current file." },
-                { "Next", "Change to the next file." },
-                { "Prev", "Change to the previous file." },
+                { "Open", "打开 A 视频。" },
+                { "OpenB", "打开 B 视频并进入双视频模式。" },
+                { "OpenAudio", "打开 A 视频并指定独立音频。" },
+                { "SingleMode", "切换到单视频模式，默认显示 A 视频。" },
+                { "DualMode", "切换到左右双视频模式。" },
+                { "Close", "关闭当前视频。" },
+                { "CloseAll", "关闭全部视频。" },
+                { "Reload", "重新加载当前视频。" },
+                { "Next", "切换到下一个 A 视频。" },
+                { "Prev", "切换到上一个 A 视频。" },
                 { "NextLayer", "Change to the next layer." },
                 { "PrevLayer", "Change to the previous layer." },
                 { "Exit", "Exit the application." }
@@ -159,6 +197,23 @@ namespace djv
                     _actions["Reload"]->setEnabled(!value.empty());
                     _actions["Next"]->setEnabled(value.size() > 1);
                     _actions["Prev"]->setEnabled(value.size() > 1);
+                });
+
+            p.bObserver = ftk::ListObserver<std::shared_ptr<models::FilesModelItem> >::create(
+                app->getFilesModel()->observeB(),
+                [this](const std::vector<std::shared_ptr<models::FilesModelItem> >&)
+                {
+                    FTK_P();
+                    _actions["DualMode"]->setEnabled(true);
+                });
+
+            p.displayModeObserver = ftk::Observer<models::DisplayMode>::create(
+                app->getFilesModel()->observeDisplayMode(),
+                [this](models::DisplayMode value)
+                {
+                    FTK_P();
+                    _actions["SingleMode"]->setChecked(models::DisplayMode::Single == value);
+                    _actions["DualMode"]->setChecked(models::DisplayMode::Dual == value);
                 });
 
             p.aObserver = ftk::Observer<std::shared_ptr<models::FilesModelItem> >::create(

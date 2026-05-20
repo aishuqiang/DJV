@@ -55,6 +55,13 @@ namespace djv
         {
             FTK_NON_COPYABLE(App);
 
+        public:
+            enum class SplitPane
+            {
+                A,
+                B
+            };
+
         protected:
             void _init(
                 const std::shared_ptr<ftk::Context>&,
@@ -118,8 +125,28 @@ namespace djv
                 const ftk::Path& path,
                 const ftk::Path& audioPath = ftk::Path());
 
+            //! Open a file explicitly as the A input.
+            void openToA(
+                const ftk::Path& path,
+                const ftk::Path& audioPath = ftk::Path());
+
+            //! Open a file explicitly as the B input.
+            void openToB(const ftk::Path& path);
+
+            //! Open a file as the compare/B input.
+            void openCompare(const ftk::Path& path);
+
             //! Open a file dialog.
             void openDialog();
+
+            //! Open an A file dialog.
+            void openToADialog();
+
+            //! Open a compare/B file dialog.
+            void openCompareDialog();
+
+            //! Open a B file dialog.
+            void openToBDialog();
 
             //! Open a file and separate audio file dialog.
             void openSeparateAudioDialog();
@@ -129,6 +156,36 @@ namespace djv
 
             //! Observe the timeline player.
             std::shared_ptr<ftk::IObservable<std::shared_ptr<tl::Player> > > observePlayer() const;
+
+            //! Observe the A timeline player used by split compare layouts.
+            std::shared_ptr<ftk::IObservable<std::shared_ptr<tl::Player> > > observePlayerA() const;
+
+            //! Observe the B timeline player used by split compare layouts.
+            std::shared_ptr<ftk::IObservable<std::shared_ptr<tl::Player> > > observePlayerB() const;
+
+            //! Global transport controls. In split compare mode these control
+            //! the master transport and both A/B players together.
+            void transportStop();
+            void transportForward();
+            void transportReverse();
+            void transportTogglePlayback();
+            void transportTimeAction(tl::TimeAction);
+            void transportSeek(const OTIO_NS::RationalTime&);
+            void transportSetLoop(tl::Loop);
+            void transportSetSpeed(double);
+            void transportSetSpeedMult(double);
+
+            //! Split-pane transport controls. In synchronized mode these are
+            //! routed to the shared transport; in independent mode they only
+            //! affect the addressed pane.
+            void setSplitActivePane(SplitPane);
+            void splitStop(SplitPane);
+            void splitForward(SplitPane);
+            void splitReverse(SplitPane);
+            void splitSeek(SplitPane, const OTIO_NS::RationalTime&);
+            void splitSetSpeed(SplitPane, double);
+            void splitSetForwardStart(SplitPane);
+            void splitSetReverseStart(SplitPane);
 
             //! Get the main window.
             const std::shared_ptr<MainWindow>& getMainWindow() const;

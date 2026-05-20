@@ -26,10 +26,18 @@
 #include <ftk/UI/ToolButton.h>
 #include <ftk/Core/Format.h>
 
+#include <cmath>
+
 namespace djv
 {
     namespace app
     {
+        namespace
+        {
+            const double minPlaybackSpeedMult = 1.0 / 3.0;
+            const double maxPlaybackSpeedMult = 3.0;
+        }
+
         struct BottomToolBar::Private
         {
             std::weak_ptr<App> app;
@@ -57,7 +65,9 @@ namespace djv
             std::shared_ptr<ftk::Observer<double> > actualSpeedObserver;
             std::shared_ptr<ftk::Observer<double> > speedObserver2;
             std::shared_ptr<ftk::Observer<tl::Loop> > loopObserver;
+            std::shared_ptr<ftk::Observer<tl::Playback> > playbackObserver;
             std::shared_ptr<ftk::Observer<OTIO_NS::RationalTime> > currentTimeObserver;
+            std::shared_ptr<ftk::ListObserver<tl::VideoFrame> > currentVideoObserver;
             std::shared_ptr<ftk::Observer<OTIO_NS::TimeRange> > inOutRangeObserver;
             std::shared_ptr<ftk::Observer<float> > volumeObserver;
         };
@@ -79,9 +89,9 @@ namespace djv
             p.app = app;
 
             p.speedModel = ftk::DoubleModel::create();
-            p.speedModel->setRange(ftk::RangeD(0.0, 1000000.0));
+            p.speedModel->setRange(ftk::RangeD(minPlaybackSpeedMult, maxPlaybackSpeedMult));
             p.speedModel->setStep(1.F);
-            p.speedModel->setLargeStep(10.F);
+            p.speedModel->setLargeStep(1.F);
 
             auto actions = playbackActions->getActions();
             p.buttons["Stop"] = ftk::ToolButton::create(context, actions["Stop"]);
@@ -91,7 +101,7 @@ namespace djv
             p.loopWidget = tl::ui::PlaybackLoopWidget::create(context);
 
             p.playbackShuttle = ftk::ShuttleWidget::create(context);
-            p.playbackShuttle->setTooltip("Playback shuttle. Click and drag to change playback speed.");
+            p.playbackShuttle->setTooltip("播放速率拖动控制。");
 
             actions = frameActions->getActions();
             p.buttons["Start"] = ftk::ToolButton::create(context, actions["Start"]);
@@ -102,31 +112,31 @@ namespace djv
             p.buttons["Next"]->setRepeatClick(true);
 
             p.frameShuttle = ftk::ShuttleWidget::create(context);
-            p.frameShuttle->setTooltip("Frame shuttle. Click and drag to change the current frame.");
+            p.frameShuttle->setTooltip("帧拖动控制。");
 
             auto timeUnitsModel = app->getTimeUnitsModel();
             p.currentTimeEdit = tl::ui::TimeEdit::create(context, timeUnitsModel);
-            p.currentTimeEdit->setTooltip("Current time.");
+            p.currentTimeEdit->setTooltip("当前时间。");
 
             p.durationLabel = tl::ui::TimeLabel::create(context, timeUnitsModel);
             p.durationLabel->setMarginRole(ftk::SizeRole::MarginInside);
-            p.durationLabel->setTooltip("Duration of the timeline or the in/out range if set.");
+            p.durationLabel->setTooltip("时间线或入出点范围时长。");
 
             p.timeUnitsWidget = tl::ui::TimeUnitsWidget::create(context, timeUnitsModel);
-            p.timeUnitsWidget->setTooltip("Time units.");
+            p.timeUnitsWidget->setTooltip("时间单位。");
 
             p.speedButton = ftk::ToolButton::create(context);
             p.speedButton->setPopupIcon("MenuArrow");
-            p.speedButton->setTooltip("Playback speed.");
+            p.speedButton->setTooltip("播放速率。");
 
             p.audioLabel = ftk::Label::create(context);
             p.audioLabel->setFont(ftk::FontType::Mono);
             p.audioLabel->setHMarginRole(ftk::SizeRole::MarginInside);
-            p.audioLabel->setTooltip("Audio volume.");
+            p.audioLabel->setTooltip("音量。");
             p.audioButton = ftk::ToolButton::create(context);
             p.audioButton->setIcon("Volume");
             p.audioButton->setPopupIcon(true);
-            p.audioButton->setTooltip("Audio controls.");
+            p.audioButton->setTooltip("音频控制。");
             actions = audioActions->getActions();
             p.muteButton = ftk::ToolButton::create(context, actions["Mute"]);
 
@@ -163,9 +173,9 @@ namespace djv
                 [this](tl::Loop value)
                 {
                     FTK_P();
-                    if (p.player)
+                    if (auto app = p.app.lock())
                     {
-                        p.player->setLoop(value);
+                        app->transportSetLoop(value);
                     }
                 });
 
@@ -173,18 +183,19 @@ namespace djv
                 [this](bool value)
                 {
                     FTK_P();
-                    if (p.player)
+                    if (auto app = p.app.lock())
                     {
                         if (value)
                         {
-                            if (p.player->isStopped())
+                            if (p.player &&
+                                p.player->isStopped())
                             {
-                                p.player->forward();
+                                app->transportForward();
                             }
                         }
                         else
                         {
-                            p.player->setSpeedMult(1.0);
+                            app->transportSetSpeedMult(1.0);
                         }
                     }
                 });
@@ -192,9 +203,9 @@ namespace djv
                 [this](int value)
                 {
                     FTK_P();
-                    if (p.player)
+                    if (auto app = p.app.lock())
                     {
-                        p.player->setSpeedMult(1.0 + value / 10.0);
+                        app->transportSetSpeedMult(1.0 + value / 10.0);
                     }
                 });
 
@@ -202,9 +213,10 @@ namespace djv
                 [this](bool)
                 {
                     FTK_P();
-                    if (p.player)
+                    if (auto app = p.app.lock();
+                        app && p.player)
                     {
-                        p.player->stop();
+                        app->transportStop();
                         p.startTime = p.player->getCurrentTime();
                     }
                 });
@@ -212,9 +224,10 @@ namespace djv
                 [this](int value)
                 {
                     FTK_P();
-                    if (p.player)
+                    if (auto app = p.app.lock();
+                        app && p.player)
                     {
-                        p.player->seek(OTIO_NS::RationalTime(
+                        app->transportSeek(OTIO_NS::RationalTime(
                             p.startTime.value() + value,
                             p.startTime.rate()));
                     }
@@ -224,10 +237,10 @@ namespace djv
                 [this](const OTIO_NS::RationalTime& value)
                 {
                     FTK_P();
-                    if (p.player)
+                    if (auto app = p.app.lock();
+                        app && p.player)
                     {
-                        p.player->stop();
-                        p.player->seek(value);
+                        app->transportSeek(value);
                         p.currentTimeEdit->setValue(p.player->getCurrentTime());
                     }
                 });
@@ -266,9 +279,9 @@ namespace djv
                 [this](double value)
                 {
                     FTK_P();
-                    if (p.player)
+                    if (auto app = p.app.lock())
                     {
-                        p.player->setSpeed(value);
+                        app->transportSetSpeed(value);
                     }
                 });
 
@@ -327,21 +340,46 @@ namespace djv
             FTK_P();
 
             p.player = value;
+            const auto updateSpeedLabel = [this]
+            {
+                FTK_P();
+                double speed = 0.0;
+                if (p.player)
+                {
+                    const tl::Playback playback = p.player->getPlayback();
+                    speed = tl::Playback::Stop == playback ?
+                        p.player->getSpeed() :
+                        p.player->getActualSpeed();
+                    if (tl::Playback::Reverse == playback)
+                    {
+                        speed = -std::abs(speed);
+                    }
+                }
+                p.speedButton->setText(ftk::Format("{0}").arg(speed, 2));
+            };
 
             if (p.player)
             {
+                const double defaultSpeed = p.player->getDefaultSpeed();
+                p.speedModel->setRange(ftk::RangeD(
+                    defaultSpeed * minPlaybackSpeedMult,
+                    defaultSpeed * maxPlaybackSpeedMult));
+                p.speedModel->setStep(defaultSpeed);
+                p.speedModel->setLargeStep(defaultSpeed);
+
                 p.speedObserver = ftk::Observer<double>::create(
                     p.player->observeSpeed(),
-                    [this](double value)
+                    [this, updateSpeedLabel](double value)
                     {
                         _p->speedModel->setValue(value);
+                        updateSpeedLabel();
                     });
 
                 p.actualSpeedObserver = ftk::Observer<double>::create(
                     p.player->observeActualSpeed(),
-                    [this](double value)
+                    [updateSpeedLabel](double)
                     {
-                        _p->speedButton->setText(ftk::Format("{0}").arg(value, 2));
+                        updateSpeedLabel();
                     });
 
                 p.loopObserver = ftk::Observer<tl::Loop>::create(
@@ -355,7 +393,27 @@ namespace djv
                     p.player->observeCurrentTime(),
                     [this](const OTIO_NS::RationalTime& value)
                     {
-                        _p->currentTimeEdit->setValue(value);
+                        if (_p->player &&
+                            _p->player->isStopped() &&
+                            _p->player->getCurrentVideo().empty())
+                        {
+                            _p->currentTimeEdit->setValue(value);
+                        }
+                    });
+
+                p.currentVideoObserver = ftk::ListObserver<tl::VideoFrame>::create(
+                    p.player->observeCurrentVideo(),
+                    [this](const std::vector<tl::VideoFrame>& value)
+                    {
+                        if (!value.empty() &&
+                            !value.front().time.strictly_equal(tl::invalidTime))
+                        {
+                            _p->currentTimeEdit->setValue(value.front().time);
+                        }
+                        else if (_p->player && _p->player->isStopped())
+                        {
+                            _p->currentTimeEdit->setValue(_p->player->getCurrentTime());
+                        }
                     });
 
                 p.inOutRangeObserver = ftk::Observer<OTIO_NS::TimeRange>::create(
@@ -364,6 +422,16 @@ namespace djv
                     {
                         _p->durationLabel->setValue(value.duration());
                     });
+
+                p.playbackObserver = ftk::Observer<tl::Playback>::create(
+                    p.player->observePlayback(),
+                    [updateSpeedLabel](tl::Playback)
+                    {
+                        updateSpeedLabel();
+                    });
+
+                p.speedModel->setValue(p.player->getSpeed());
+                updateSpeedLabel();
             }
             else
             {
@@ -376,7 +444,9 @@ namespace djv
                 p.speedObserver.reset();
                 p.actualSpeedObserver.reset();
                 p.loopObserver.reset();
+                p.playbackObserver.reset();
                 p.currentTimeObserver.reset();
+                p.currentVideoObserver.reset();
                 p.inOutRangeObserver.reset();
             }
 
@@ -405,9 +475,9 @@ namespace djv
                     {
                         if (auto widget = weak.lock())
                         {
-                            if (widget->_p->player)
+                            if (auto app = widget->_p->app.lock())
                             {
-                                widget->_p->player->setSpeed(value);
+                                app->transportSetSpeed(value);
                             }
                             widget->_p->speedPopup->close();
                         }

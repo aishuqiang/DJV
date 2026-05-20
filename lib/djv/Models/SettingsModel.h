@@ -40,8 +40,8 @@ namespace djv
         {
             bool compat = true;
             size_t audioBufferFrameCount = tl::PlayerOptions().audioBufferFrameCount;
-            size_t videoRequestMax = 16;
-            size_t audioRequestMax = 16;
+            size_t videoRequestMax = 8;
+            size_t audioRequestMax = 8;
 
             bool operator == (const AdvancedSettings&) const;
             bool operator != (const AdvancedSettings&) const;
@@ -239,6 +239,9 @@ namespace djv
 
         //! Get the timeline thumbnails size.
         int getTimelineThumbnailSize(TimelineThumbnailSize);
+
+        //! Larger filmstrip size for dual-view pane transport bars.
+        int getPaneTimelineThumbnailSize(TimelineThumbnailSize);
 
         //! Get the timeline waveform size.
         int getTimelineWaveformSize(TimelineThumbnailSize);

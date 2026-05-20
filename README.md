@@ -167,3 +167,16 @@ set PATH=%CD%\install-Release\bin;%PATH%
 ```
 build-Release\bin\djv\Release\djv DJV\etc\SampleData\BART_2021-02-07.0000.jpg
 ```
+
+#### Portable package (ZIP, no installer)
+
+From the Visual Studio x64 command prompt, after dependencies are built:
+```
+package-win.bat
+```
+Or if the super build is already done:
+```
+etc\Windows\windows-portable-package.bat %CD% Release
+```
+The ZIP is written to `build-Release\`. Unzip on Windows 10 and run `DJV.bat`.
+See [docs/windows-portable-zh.md](docs/windows-portable-zh.md) for details in Chinese.

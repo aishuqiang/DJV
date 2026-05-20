@@ -25,6 +25,7 @@ project(
 
 set(DJV_MACOS_PACKAGE OFF CACHE BOOL "Enable packaging for macOS")
 set(DJV_WINDOWS_PACKAGE OFF CACHE BOOL "Enable packaging for Windows")
+set(DJV_WINDOWS_PORTABLE OFF CACHE BOOL "Windows package: ZIP portable only (no NSIS installer)")
 
 #-------------------------------------------------------------------------------
 # Internal configuration
