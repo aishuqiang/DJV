@@ -8,7 +8,7 @@
 - MSYS2（编译 FFmpeg）
 - Strawberry Perl（网络相关依赖）
 - Python 3.11（若开启 USD）
-- NSIS 仅在你需要 `.exe` 安装包时才必须；**免安装 ZIP 不需要 NSIS**
+- NSIS 仅在你需要传统安装包时才必须；**免安装 ZIP/自解压 EXE 不需要 NSIS**
 
 详见仓库根目录 [README.md](../README.md) 的 “Building on Windows” 一节。
 
@@ -24,11 +24,13 @@ package-win.bat
 
 1. `sbuild-win.bat` — 编译依赖与 DJV（首次很慢，数小时属正常）
 2. `etc\Windows\windows-portable-package.bat` — 生成免安装 ZIP
+3. GitHub Actions 会额外调用 `etc\Windows\windows-portable-sfx.ps1` — 生成免安装自解压 EXE
 
 成功后，在 `build-Release\` 下得到类似：
 
 ```text
 djv-3.4.3-dev-windows-amd64.zip
+djv-3.4.3-dev-windows-amd64-portable.exe
 ```
 
 ## 仅重新打 ZIP（已编译过）
@@ -40,7 +42,22 @@ set PATH=%CD%\install-Release\bin;%PATH%
 etc\Windows\windows-portable-package.bat %CD% Release
 ```
 
+如需在本机继续生成免安装 EXE：
+
+```powershell
+$zip = Get-ChildItem "build-Release\djv-*-windows-*.zip" | Select-Object -First 1
+etc\Windows\windows-portable-sfx.ps1 -ZipPath $zip.FullName
+```
+
 ## 在 Win10 上使用
+
+### 方式 A：免安装 EXE
+
+1. 从 GitHub Actions 的 artifact 下载 `djv-...-portable.exe`
+2. 双击运行即可；它会临时解压 DJV 并启动程序
+3. 这不是传统安装器，不会写入开始菜单；关闭程序后临时文件会清理
+
+### 方式 B：免安装 ZIP
 
 1. 将 ZIP 解压到任意目录，例如 `D:\DJV`
 2. 双击 **`DJV.bat`**，或运行 `bin\djv.exe`

@@ -57,6 +57,15 @@ jobs:
       run: |
         djv\etc\Windows\windows-portable-package.bat djv Release
 
+    - name: Build portable EXE
+      shell: pwsh
+      run: |
+        $zip = Get-ChildItem "build-Release\djv-*-windows-*.zip" | Select-Object -First 1
+        if (-not $zip) {
+          throw "Portable ZIP was not generated."
+        }
+        djv\etc\Windows\windows-portable-sfx.ps1 -ZipPath $zip.FullName
+
     - name: Verify packaged local changes
       shell: pwsh
       run: |
@@ -85,8 +94,16 @@ jobs:
         }
         Write-Host "Verified packaged local changes in $($exe.FullName)"
 
+        $portableExe = Get-ChildItem "build-Release\djv-*-windows-*-portable.exe" | Select-Object -First 1
+        if (-not $portableExe) {
+          throw "Portable self-extracting EXE was not generated."
+        }
+        Write-Host "Verified portable self-extracting EXE exists: $($portableExe.FullName)"
+
     - uses: actions/upload-artifact@v4
       with:
         name: DJV-Windows-Portable-x64
-        path: build-Release/djv-*-windows-*.zip
+        path: |
+          build-Release/djv-*-windows-*.zip
+          build-Release/djv-*-windows-*-portable.exe
         if-no-files-found: error

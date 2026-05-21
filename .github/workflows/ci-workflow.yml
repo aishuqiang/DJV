@@ -371,8 +371,19 @@ jobs:
       run: |
         djv\etc\Windows\windows-portable-package.bat djv Release
 
+    - name: Build portable EXE
+      shell: pwsh
+      run: |
+        $zip = Get-ChildItem "build-Release\djv-*-windows-*.zip" | Select-Object -First 1
+        if (-not $zip) {
+          throw "Portable ZIP was not generated."
+        }
+        djv\etc\Windows\windows-portable-sfx.ps1 -ZipPath $zip.FullName
+
     - uses: actions/upload-artifact@v7
       with:
         name: DJV-Windows-Portable-x64
-        path: build-Release\djv-*-windows-*.zip
+        path: |
+          build-Release\djv-*-windows-*.zip
+          build-Release\djv-*-windows-*-portable.exe
         archive: false
