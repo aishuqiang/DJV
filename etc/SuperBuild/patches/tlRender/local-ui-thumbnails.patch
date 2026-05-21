@@ -12,7 +12,7 @@ index e10bbf7a..ab249b53 100644
 +                hardwareDecode = i->second;
 +            }
          }
-
+ 
          IOOptions Options::getIOOptions() const
 @@ -35,6 +40,7 @@ namespace tl
              IOOptions out;
@@ -21,7 +21,7 @@ index e10bbf7a..ab249b53 100644
 +            out["FFmpeg/HardwareDecode"] = hardwareDecode;
              return out;
          }
-
+ 
 @@ -42,7 +48,8 @@ namespace tl
          {
              return
@@ -30,7 +30,7 @@ index e10bbf7a..ab249b53 100644
 +                ffprobePath == other.ffprobePath &&
 +                hardwareDecode == other.hardwareDecode;
          }
-
+ 
          bool Options::operator != (const Options& other) const
 @@ -84,6 +91,34 @@ namespace tl
              {
@@ -66,7 +66,7 @@ index e10bbf7a..ab249b53 100644
 +            }
              return out;
          }
-
+ 
 @@ -177,9 +212,8 @@ namespace tl
          Pipe::~Pipe()
          {
@@ -76,12 +76,12 @@ index e10bbf7a..ab249b53 100644
 -            //! \bug This is causing a SIGKILL on Linux when a read error occurs.
 -            //subprocess_terminate(&p.subprocess);
          }
-
+ 
          size_t Pipe::read(uint8_t* data, size_t size)
 @@ -202,6 +236,15 @@ namespace tl
              return out;
          }
-
+ 
 +        void Pipe::terminate()
 +        {
 +            FTK_P();
@@ -100,7 +100,7 @@ index e10bbf7a..ab249b53 100644
              json["FFmpeg"] = value.ffmpegPath;
 +            json["HardwareDecode"] = value.hardwareDecode;
          }
-
+ 
          void from_json(const nlohmann::json& json, Options& value)
          {
 -            json.at("FFprobe").get_to(value.ffprobePath);
@@ -128,40 +128,40 @@ index e0e847d7..65713250 100644
 --- a/lib/tlRender/IO/FFmpegCmd.h
 +++ b/lib/tlRender/IO/FFmpegCmd.h
 @@ -22,6 +22,7 @@ namespace tl
-
+ 
              std::string ffmpegPath  = "ffmpeg";
              std::string ffprobePath = "ffprobe";
 +            std::string hardwareDecode = "Auto";
-
+ 
              TL_API IOOptions getIOOptions() const;
-
+ 
 diff --git a/lib/tlRender/IO/FFmpegCmdPrivate.h b/lib/tlRender/IO/FFmpegCmdPrivate.h
 index bdf29950..e1535071 100644
 --- a/lib/tlRender/IO/FFmpegCmdPrivate.h
 +++ b/lib/tlRender/IO/FFmpegCmdPrivate.h
 @@ -17,6 +17,7 @@ namespace tl
              ~Pipe();
-
+ 
              size_t read(uint8_t*, size_t);
 +            void terminate();
-
+ 
              std::string readAll();
-
+ 
 diff --git a/lib/tlRender/IO/FFmpegCmdRead.cpp b/lib/tlRender/IO/FFmpegCmdRead.cpp
 index 3c396482..9c7efe95 100644
 --- a/lib/tlRender/IO/FFmpegCmdRead.cpp
 +++ b/lib/tlRender/IO/FFmpegCmdRead.cpp
 @@ -5,14 +5,65 @@
-
+ 
  #include <ftk/Core/Format.h>
  #include <ftk/Core/LogSystem.h>
 +#include <ftk/Core/String.h>
-
+ 
  #include <atomic>
 +#include <cstdint>
  #include <thread>
 +#include <vector>
-
+ 
  namespace tl
  {
      namespace ffmpeg_cmd
@@ -280,7 +280,7 @@ index 3c396482..9c7efe95 100644
 +                                    }
 +                                }
 +                            }
-
+ 
                              k = j.find("avg_frame_rate");
                              if (k != j.end())
 @@ -629,13 +718,71 @@ namespace tl
@@ -344,7 +344,7 @@ index 3c396482..9c7efe95 100644
 +                        }
 +                    }
                  }
-
+ 
 +                bool needsPipe = false;
 +                if (videoRequest)
 +                {
@@ -403,7 +403,7 @@ index 3c396482..9c7efe95 100644
 @@ -689,7 +846,14 @@ namespace tl
                  }
              }
-
+ 
 -            p.thread.pipe.reset();
 +            {
 +                std::unique_lock<std::mutex> lock(p.thread.pipeMutex);
@@ -414,7 +414,7 @@ index 3c396482..9c7efe95 100644
 +                }
 +            }
          }
-
+ 
          void Read::_audioThread()
 @@ -722,11 +886,22 @@ namespace tl
                      !request->timeRange.start_time().strictly_equal(p.audioThread.time))
@@ -428,7 +428,7 @@ index 3c396482..9c7efe95 100644
 +                        p.audioThread.pipe.reset();
 +                    }
                  }
-
+ 
 +                bool needsPipe = false;
 +                if (request)
 +                {
@@ -471,7 +471,7 @@ index 3c396482..9c7efe95 100644
 @@ -777,7 +958,14 @@ namespace tl
                  }
              }
-
+ 
 -            p.audioThread.pipe.reset();
 +            {
 +                std::unique_lock<std::mutex> lock(p.audioThread.pipeMutex);
@@ -526,16 +526,16 @@ index 176aa91c..0c9857ff 100644
 +++ b/lib/tlRender/IO/FFmpegReadVideo.cpp
 @@ -4,9 +4,11 @@
  #include <tlRender/IO/FFmpegReadPrivate.h>
-
+ 
  #include <ftk/Core/Format.h>
 +#include <ftk/Core/String.h>
-
+ 
  extern "C"
  {
 +#include <libavutil/hwcontext.h>
  #include <libavutil/imgutils.h>
  #include <libavutil/opt.h>
-
+ 
 @@ -16,6 +18,23 @@ namespace tl
  {
      namespace ffmpeg
@@ -691,7 +691,7 @@ index 6caeab32..717f6b7c 100644
 @@ -12,8 +12,49 @@
  #include <ftk/Core/String.h>
  #include <ftk/Core/Time.h>
-
+ 
 +#include <cmath>
 +
  namespace tl
@@ -782,7 +782,7 @@ index 6caeab32..717f6b7c 100644
      {
          FTK_P();
 +        const Playback previousToggle = p.toggle;
-
+ 
          // Update the frame for loop modes.
          switch (p.loop->get())
 @@ -416,7 +470,7 @@ namespace tl
@@ -811,7 +811,7 @@ index 6caeab32..717f6b7c 100644
              }
          }
      }
-
+ 
 +    void Player::syncToTime(const OTIO_NS::RationalTime& time, Playback playbackHint)
 +    {
 +        FTK_P();
@@ -872,7 +872,7 @@ index 6caeab32..717f6b7c 100644
 @@ -840,6 +931,15 @@ namespace tl
      {
          FTK_P();
-
+ 
 +        // Snapshot the most recently displayed video frame before advancing the
 +        // transport so frame-locked playback can stall when decode falls
 +        // behind instead of letting time run ahead of the image.
@@ -1070,7 +1070,7 @@ index ce86db77..2b19b798 100644
 @@ -212,6 +212,11 @@ namespace tl
          //! Seek to the given time.
          TL_API void seek(const OTIO_NS::RationalTime&);
-
+ 
 +        //! Synchronize to an externally-driven transport time without starting
 +        //! local playback. This is used for follower players in split sync
 +        //! mode so they do not drift on their own clocks.
@@ -1078,7 +1078,7 @@ index ce86db77..2b19b798 100644
 +
          //! Time action.
          TL_API void timeAction(TimeAction);
-
+ 
 diff --git a/lib/tlRender/Timeline/PlayerAudio.cpp b/lib/tlRender/Timeline/PlayerAudio.cpp
 index 41aa6d57..11bddf1e 100644
 --- a/lib/tlRender/Timeline/PlayerAudio.cpp
@@ -1086,7 +1086,7 @@ index 41aa6d57..11bddf1e 100644
 @@ -137,6 +137,14 @@ namespace tl
          return out;
      }
-
+ 
 +    bool Player::Private::useAudioClock(Playback playbackValue) const
 +    {
 +        // Video playback is the visible source of truth. High-bitrate sources
@@ -1101,7 +1101,7 @@ index 41aa6d57..11bddf1e 100644
 @@ -221,6 +229,13 @@ namespace tl
          }
  #endif // TLRENDER_SDL2
-
+ 
 +        if (0 == playerOptions.audioRequestMax)
 +        {
 +            audioDevices = false;
@@ -1118,15 +1118,15 @@ index 8aad1b97..6da72238 100644
 +++ b/lib/tlRender/Timeline/PlayerOptions.h
 @@ -36,10 +36,10 @@ namespace tl
          PlayerCacheOptions cache;
-
+ 
          //! Maximum number of video requests.
 -        size_t videoRequestMax = 16;
 +        size_t videoRequestMax = 64;
-
+ 
          //! Maximum number of audio requests.
 -        size_t audioRequestMax = 16;
 +        size_t audioRequestMax = 32;
-
+ 
          //! Audio buffer frame count.
          size_t audioBufferFrameCount = 500;
 diff --git a/lib/tlRender/Timeline/PlayerPrivate.cpp b/lib/tlRender/Timeline/PlayerPrivate.cpp
@@ -1136,7 +1136,7 @@ index b184268d..f036d5cd 100644
 @@ -9,8 +9,43 @@
  #include <ftk/Core/Format.h>
  #include <ftk/Core/String.h>
-
+ 
 +#include <algorithm>
 +#include <cmath>
 +#include <limits>
@@ -1205,7 +1205,7 @@ index b184268d..f036d5cd 100644
                      playbackReset(out);
                  }
 @@ -123,22 +158,35 @@ namespace tl
-
+ 
      void Player::Private::clearRequests()
      {
 -        std::vector<std::vector<uint64_t> > ids(1 + thread.state.compare.size());
@@ -1250,7 +1250,7 @@ index b184268d..f036d5cd 100644
 @@ -157,6 +205,142 @@ namespace tl
          }
      }
-
+ 
 +    bool Player::Private::findCurrentVideoFrame(
 +        const OTIO_NS::RationalTime& time,
 +        Playback playbackValue,
@@ -1416,7 +1416,7 @@ index b184268d..f036d5cd 100644
 +            (thread.state.cacheOptions.videoGB * ftk::gigabyte) / byteCount :
 +            0;
      }
-
+ 
      size_t Player::Private::getAudioCacheMax() const
 @@ -190,8 +381,10 @@ namespace tl
          // This function returns the approximate number seconds of audio
@@ -1429,11 +1429,11 @@ index b184268d..f036d5cd 100644
 +            (thread.state.cacheOptions.audioGB * ftk::gigabyte) / byteCount :
 +            0;
      }
-
+ 
      OTIO_NS::TimeRange Player::Private::getVideoCacheRange(size_t max) const
 @@ -199,8 +392,18 @@ namespace tl
          OTIO_NS::TimeRange out;
-
+ 
          const double rate = thread.state.currentTime.rate();
 +        size_t effectiveMax = max;
 +        const bool highMemoryVideo =
@@ -1486,7 +1486,7 @@ index b184268d..f036d5cd 100644
 +                    rangeStart);
 +            }
          }
-
+ 
          return out;
 @@ -241,7 +472,9 @@ namespace tl
          case CacheDir::Reverse:
@@ -1497,7 +1497,7 @@ index b184268d..f036d5cd 100644
 +            out = ftk::Range<int64_t>(c - readBehind, c + readAhead);
 +            break;
          }
-
+ 
          return out;
 @@ -250,6 +483,14 @@ namespace tl
      void Player::Private::cacheUpdate()
@@ -1511,13 +1511,13 @@ index b184268d..f036d5cd 100644
 +                ioInfo = timelineIOInfo;
 +            }
 +        }
-
+ 
          const size_t videoCacheMax = getVideoCacheMax();
          const size_t audioCacheMax = getAudioCacheMax();
 @@ -321,15 +562,218 @@ namespace tl
              }
          }
-
+ 
 +        // Drop pending requests that are outside the active cache range only
 +        // while stopped. During playback, cancelling one stale FFmpegCmd request
 +        // tears down the shared pipe and causes visible start/stop stutter.
@@ -1771,7 +1771,7 @@ index b184268d..f036d5cd 100644
 +                        requests.push_back(Thread::PendingVideoRequest());
 +                        requests.back().timeline = timeline;
 +                        requests.back().request = timeline->getVideo(timeLooped, ioOptions2);
-
+ 
                          for (size_t k = 0; k < thread.state.compare.size(); ++k)
                          {
 +                            auto compare = thread.state.compare[k];
@@ -2051,14 +2051,14 @@ index b184268d..f036d5cd 100644
 +            speed == other.speed &&
              cacheOptions == other.cacheOptions;
      }
-
+ 
 diff --git a/lib/tlRender/Timeline/PlayerPrivate.h b/lib/tlRender/Timeline/PlayerPrivate.h
 index c90aabb6..286fa8cf 100644
 --- a/lib/tlRender/Timeline/PlayerPrivate.h
 +++ b/lib/tlRender/Timeline/PlayerPrivate.h
 @@ -35,6 +35,12 @@ namespace tl
          void cacheUpdate();
-
+ 
          bool hasAudio() const;
 +        bool useAudioClock(Playback) const;
 +        bool findCurrentVideoFrame(
@@ -2075,10 +2075,10 @@ index c90aabb6..286fa8cf 100644
              double audioOffset = 0.0;
 +            double speed = 0.0;
              PlayerCacheOptions cacheOptions;
-
+ 
              bool operator == (const PlaybackState&) const;
 @@ -125,11 +132,20 @@ namespace tl
-
+ 
          struct Thread
          {
 +            struct PendingVideoRequest
@@ -2151,7 +2151,7 @@ index 12bb05da..3ab1f945 100644
 +            ids.end());
 +        p.thread.cv.notify_one();
      }
-
+ 
      size_t Timeline::getObjectCount()
 diff --git a/lib/tlRender/Timeline/TimelineOptions.h b/lib/tlRender/Timeline/TimelineOptions.h
 index 11be1749..98528717 100644
@@ -2159,15 +2159,15 @@ index 11be1749..98528717 100644
 +++ b/lib/tlRender/Timeline/TimelineOptions.h
 @@ -38,10 +38,10 @@ namespace tl
          bool compat = true;
-
+ 
          //! Maximum number of video requests.
 -        size_t videoRequestMax = 16;
 +        size_t videoRequestMax = 64;
-
+ 
          //! Maximum number of audio requests.
 -        size_t audioRequestMax = 16;
 +        size_t audioRequestMax = 32;
-
+ 
          //! Request timeout.
          std::chrono::milliseconds requestTimeout = std::chrono::milliseconds(5);
 diff --git a/lib/tlRender/Timeline/TimelinePrivate.cpp b/lib/tlRender/Timeline/TimelinePrivate.cpp
@@ -2175,7 +2175,7 @@ index d0c0ba84..8b006374 100644
 --- a/lib/tlRender/Timeline/TimelinePrivate.cpp
 +++ b/lib/tlRender/Timeline/TimelinePrivate.cpp
 @@ -132,6 +132,186 @@ namespace tl
-
+ 
      void Timeline::Private::requests()
      {
 +        std::vector<uint64_t> videoCancelIds;
@@ -2420,7 +2420,7 @@ index 47c5907b..3b0ceda4 100644
 --- a/lib/tlRender/UI/ThumbnailSystem.cpp
 +++ b/lib/tlRender/UI/ThumbnailSystem.cpp
 @@ -40,7 +40,12 @@ namespace tl
-
+ 
          namespace
          {
 -            const size_t ioCacheMax   = 2;
@@ -2431,7 +2431,7 @@ index 47c5907b..3b0ceda4 100644
 +
 +            const size_t ioCacheMax   = 4;
              const size_t infoCacheMax = 1000;
-
+ 
              std::string getInfoKey(
 @@ -140,6 +145,8 @@ namespace tl
                  ftk::LRUCache<std::string, std::shared_ptr<ftk::Image> > cache;
@@ -2441,24 +2441,24 @@ index 47c5907b..3b0ceda4 100644
 +                std::string lastPath;
              };
              ThumbnailMutex thumbnailMutex;
-
+ 
 @@ -170,6 +177,8 @@ namespace tl
                  std::atomic<bool> running;
              };
              ThumbnailThread thumbnailThread;
 +            ThumbnailThread thumbnailThread2;
 +            std::shared_ptr<ftk::gl::Window> window2;
-
+ 
              struct WaveformThread
              {
 @@ -180,6 +189,7 @@ namespace tl
              };
              WaveformThread waveformThread;
-
+ 
 +            std::atomic<bool> requestsEnabled = true;
              std::shared_ptr<ftk::Timer> logTimer;
          };
-
+ 
 @@ -229,18 +239,40 @@ namespace tl
                      }
                      if (p.thumbnailThread.render)
@@ -2475,7 +2475,7 @@ index 47c5907b..3b0ceda4 100644
 -                    _thumbnailCancel();
                      p.window->clearCurrent();
                  });
-
+ 
 +            p.window2 = ftk::gl::Window::create(
 +                context,
 +                "tl::ui::ThumbnailSystem2",
@@ -2596,7 +2596,7 @@ index 47c5907b..3b0ceda4 100644
 @@ -555,6 +621,39 @@ namespace tl
              }
          }
-
+ 
 +        void ThumbnailSystem::setRequestsEnabled(bool value)
 +        {
 +            FTK_P();
@@ -2635,7 +2635,7 @@ index 47c5907b..3b0ceda4 100644
              return _p->cacheOptions->get();
 @@ -648,15 +747,24 @@ namespace tl
          }
-
+ 
          void ThumbnailSystem::_thumbnailRun()
 +        {
 +            _thumbnailRunWorker(0);
@@ -2694,7 +2694,7 @@ index 47c5907b..3b0ceda4 100644
 +                        worker.ioCache.clear();
                          ioOptions = request->options;
                      }
-
+ 
 @@ -680,18 +804,16 @@ namespace tl
                      try
                      {
@@ -2796,20 +2796,20 @@ index 0aba63f8..e133fd6f 100644
 @@ -113,6 +113,10 @@ namespace tl
              //! Cancel pending requests.
              TL_API void cancelRequests(const std::vector<uint64_t>&);
-
+ 
 +            //! Enable or disable thumbnail and waveform decode requests.
 +            TL_API void setRequestsEnabled(bool);
 +            TL_API bool areRequestsEnabled() const;
 +
              //! Get the cache options.
              TL_API const ThumbnailCacheOptions& getCacheOptions() const;
-
+ 
 @@ -134,6 +138,7 @@ namespace tl
              void _infoCancel();
              void _thumbnailCancel();
              void _waveformCancel();
 +            void _thumbnailRunWorker(int threadIndex);
-
+ 
              FTK_PRIVATE();
          };
 diff --git a/lib/tlRender/UI/TimelineItem.cpp b/lib/tlRender/UI/TimelineItem.cpp
@@ -2845,7 +2845,7 @@ index b66e7112..ab5225fa 100644
 +                    }
                      setDrawUpdate();
                  });
-
+ 
 @@ -497,7 +518,14 @@ namespace tl
              bool out = true;
              if (_displayOptions.minimize)
@@ -2865,7 +2865,7 @@ index b66e7112..ab5225fa 100644
 @@ -511,6 +539,43 @@ namespace tl
              return labelMaxSize;
          }
-
+ 
 +        bool TimelineItem::_getCurrentTimeLabel(
 +            const std::shared_ptr<ftk::FontSystem>& fontSystem,
 +            std::string& outLabel,
@@ -2956,7 +2956,7 @@ index b66e7112..ab5225fa 100644
 @@ -829,27 +909,16 @@ namespace tl
                          g.h()),
                      event.style->getColorRole(ftk::ColorRole::Red));
-
+ 
 -                const std::string label = _data->timeUnitsModel->getLabel(p.currentTime);
 -                ftk::V2I labelPos(
 -                    pos.x + p.size.border * 2 + p.size.margin,
@@ -2988,21 +2988,21 @@ index b66e7112..ab5225fa 100644
 -                    event.style->getColorRole(ftk::ColorRole::Text));
              }
          }
-
+ 
 diff --git a/lib/tlRender/UI/TimelineItem.h b/lib/tlRender/UI/TimelineItem.h
 index 0f29c120..626537ba 100644
 --- a/lib/tlRender/UI/TimelineItem.h
 +++ b/lib/tlRender/UI/TimelineItem.h
 @@ -98,6 +98,10 @@ namespace tl
              bool _isTrackVisible(int) const;
-
+ 
              ftk::Size2I _getLabelMaxSize(const std::shared_ptr<ftk::FontSystem>&) const;
 +            bool _getCurrentTimeLabel(
 +                const std::shared_ptr<ftk::FontSystem>&,
 +                std::string&,
 +                ftk::Box2I&) const;
              double _getSecondsInc(const std::shared_ptr<ftk::FontSystem>&);
-
+ 
              void _drawInOutPoints(
 diff --git a/lib/tlRender/UI/TimelineItemPrivate.h b/lib/tlRender/UI/TimelineItemPrivate.h
 index 2b62b526..738a9a2c 100644
@@ -3010,7 +3010,7 @@ index 2b62b526..738a9a2c 100644
 +++ b/lib/tlRender/UI/TimelineItemPrivate.h
 @@ -60,6 +60,7 @@ namespace tl
              MouseMode mouseMode = MouseMode::None;
-
+ 
              std::shared_ptr<ftk::Observer<OTIO_NS::RationalTime> > currentTimeObserver;
 +            std::shared_ptr<ftk::ListObserver<VideoFrame> > currentVideoObserver;
              std::shared_ptr<ftk::Observer<OTIO_NS::TimeRange> > inOutRangeObserver;
@@ -3021,7 +3021,7 @@ index e0f93b78..d7b470ab 100644
 --- a/lib/tlRender/UI/TimelineWidget.cpp
 +++ b/lib/tlRender/UI/TimelineWidget.cpp
 @@ -64,6 +64,7 @@ namespace tl
-
+ 
              std::shared_ptr<ftk::Observer<Playback> > playbackObserver;
              std::shared_ptr<ftk::Observer<OTIO_NS::RationalTime> > currentTimeObserver;
 +            std::shared_ptr<ftk::ListObserver<VideoFrame> > currentVideoObserver;
@@ -3035,7 +3035,7 @@ index e0f93b78..d7b470ab 100644
 +            p.currentVideoObserver.reset();
              p.scrollWidget->setWidget(nullptr);
              p.timelineItem.reset();
-
+ 
 @@ -175,7 +177,28 @@ namespace tl
                      p.player->observeCurrentTime(),
                      [this](const OTIO_NS::RationalTime& value)
@@ -3091,7 +3091,7 @@ index e0f93b78..d7b470ab 100644
 +            }
              p.mouse.mode = Private::MouseMode::None;
          }
-
+ 
 diff --git a/lib/tlRender/UI/VideoClipItem.cpp b/lib/tlRender/UI/VideoClipItem.cpp
 index 80619c62..994673c9 100644
 --- a/lib/tlRender/UI/VideoClipItem.cpp
@@ -3145,7 +3145,7 @@ index 80619c62..994673c9 100644
 @@ -233,19 +272,16 @@ namespace tl
              const int m = _getMargin();
              const int lineHeight = _getLineHeight();
-
+ 
 -            const ftk::Box2I g2(
 +            const ftk::Box2I strip(
                  g.min.x,
@@ -3163,7 +3163,7 @@ index 80619c62..994673c9 100644
 +            render->setClipRect(ftk::intersect(strip, clipRectState.getClipRect()));
              render->setOCIOOptions(_displayOptions.ocio);
              render->setLUTOptions(_displayOptions.lut);
-
+ 
 @@ -256,94 +292,106 @@ namespace tl
              // Get thumbnail information.
              if (!p.ioInfo.has_value() &&
@@ -3177,7 +3177,7 @@ index 80619c62..994673c9 100644
 -                    p.ioOptions);
 +                    thumbnailIOOptions(p.ioOptions));
              }
-
+ 
              std::map<OTIO_NS::RationalTime, std::shared_ptr<ftk::Image> > thumbnails;
 -            const int thumbnailWidth =
 +            const int idealThumbnailWidth =
@@ -3444,19 +3444,19 @@ index da23eb47..f3d95fd8 100644
 +            pos.y = localFocus.y + (viewPos.y - localFocus.y) * (zoomClamped / zoomPrev);
              setViewPosAndZoom(pos, zoomClamped);
          }
-
+ 
 @@ -603,7 +679,6 @@ namespace tl
-
+ 
              auto render = std::dynamic_pointer_cast<IRender>(event.render);
              const ftk::Box2I& g = getGeometry();
 -            render->drawRect(g, ftk::Color4F(0.F, 0.F, 0.F));
-
+ 
              if (p.doRender)
              {
 @@ -689,6 +764,9 @@ namespace tl
                      render->setViewport(ftk::Box2I(0, 0, g.w(), g.h()));
                      render->setClipRectEnabled(false);
-
+ 
 +                    const bool splitCompare = isSplitCompare(
 +                        compareOptions.compare);
 +
@@ -3537,7 +3537,7 @@ index da23eb47..f3d95fd8 100644
 +                                compareOptions,
 +                                p.colorBuffer->get());
 +                        }
-
+ 
                          if (!p.videoFrame.empty() && p.fpsData.has_value())
                          {
 @@ -716,8 +848,42 @@ namespace tl
@@ -3583,7 +3583,7 @@ index da23eb47..f3d95fd8 100644
 +                            render->drawBackground(boxes, vm, p.bgOptions->get());
 +                        }
                      }
-
+ 
                      // Draw the foreground buffer.
 @@ -725,11 +891,45 @@ namespace tl
                      {
@@ -3636,7 +3636,7 @@ index da23eb47..f3d95fd8 100644
 @@ -741,6 +941,7 @@ namespace tl
                  }
              }
-
+ 
 +            render->drawRect(g, ftk::Color4F(0.F, 0.F, 0.F));
              if (p.bgBuffer)
              {
@@ -3652,7 +3652,7 @@ index da23eb47..f3d95fd8 100644
 +            }
              return getRenderSize(p.compareOptions->get().compare, p.videoFrame);
          }
-
+ 
          ftk::V2I Viewport::_getViewportCenter() const
          {
              const ftk::Box2I& g = getGeometry();
@@ -3667,7 +3667,7 @@ index da23eb47..f3d95fd8 100644
 +            }
              return ftk::V2I(g.w() / 2, g.h() / 2);
          }
-
+ 
 @@ -982,7 +1197,14 @@ namespace tl
              ftk::V2I viewPos;
              double zoom = 1.0;
