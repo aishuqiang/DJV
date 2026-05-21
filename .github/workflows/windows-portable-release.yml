@@ -20,7 +20,7 @@ jobs:
       TLRENDER_FFMPEG_MINIMAL: ON
       TLRENDER_FFMPEG_PLUGIN: ON
       TLRENDER_FFMPEG_CMD: ON
-      TLRENDER_NASM: ON
+      TLRENDER_NASM: OFF
       TLRENDER_OIIO: ON
       TLRENDER_USD: OFF
       FTK_API: GL_4_1
@@ -42,8 +42,10 @@ jobs:
       shell: cmd
       run: |
         echo %CD%\install-Release\bin>> %GITHUB_PATH%
+        echo %CD%\install-Release\lib>> %GITHUB_PATH%
         cmake --version
         python --version
+        where nasm
 
     - name: Super Build
       shell: cmd
