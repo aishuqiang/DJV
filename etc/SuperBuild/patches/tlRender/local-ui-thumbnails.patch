@@ -658,3 +658,55 @@ diff -ruN a/lib/tlRender/UI/VideoClipItem.cpp b/lib/tlRender/UI/VideoClipItem.cp
                      }
                  }
              }
+diff -ruN a/lib/tlRender/Timeline/Player.h b/lib/tlRender/Timeline/Player.h
+--- a/lib/tlRender/Timeline/Player.h	2026-05-21 12:45:00
++++ b/lib/tlRender/Timeline/Player.h	2026-05-21 12:45:00
+@@ -212,6 +212,11 @@
+         //! Seek to the given time.
+         TL_API void seek(const OTIO_NS::RationalTime&);
+ 
++        //! Synchronize to an externally-driven transport time without starting
++        //! local playback. Used for follower players in split sync mode.
++        TL_API void syncToTime(const OTIO_NS::RationalTime&, Playback playbackHint);
++
+         //! Time action.
+         TL_API void timeAction(TimeAction);
+ 
+diff -ruN a/lib/tlRender/Timeline/Player.cpp b/lib/tlRender/Timeline/Player.cpp
+--- a/lib/tlRender/Timeline/Player.cpp	2026-05-21 12:45:00
++++ b/lib/tlRender/Timeline/Player.cpp	2026-05-21 12:45:00
+@@ -532,6 +532,35 @@
+         }
+     }
+ 
++    void Player::syncToTime(const OTIO_NS::RationalTime& time, Playback playbackHint)
++    {
++        FTK_P();
++
++        const auto tmp = loop(
++            time.rescaled_to(p.timeRange.duration()).floor(),
++            p.timeRange);
++
++        p.currentTime->setIfChanged(tmp);
++        {
++            std::unique_lock<std::mutex> lock(p.mutex.mutex);
++            p.mutex.state.currentTime = tmp;
++            p.mutex.state.playback = Playback::Stop;
++            p.mutex.cacheDir =
++                Playback::Reverse == playbackHint ?
++                CacheDir::Reverse :
++                CacheDir::Forward;
++            p.mutex.clearRequests = true;
++            p.mutex.currentVideoFrame.clear();
++        }
++        {
++            std::unique_lock<std::mutex> lock(p.audioMutex.mutex);
++            p.audioMutex.state.playback = Playback::Stop;
++            p.audioReset(tmp);
++        }
++        p.playbackReset(tmp);
++    }
++
+     void Player::timeAction(TimeAction time)
+     {
+         FTK_P();
