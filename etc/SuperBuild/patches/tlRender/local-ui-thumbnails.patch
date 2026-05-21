@@ -1,12 +1,10 @@
 diff -ruN a/lib/tlRender/Timeline/Player.cpp b/lib/tlRender/Timeline/Player.cpp
 --- a/lib/tlRender/Timeline/Player.cpp	2026-05-21 13:50:04
 +++ b/lib/tlRender/Timeline/Player.cpp	2026-05-21 13:50:04
-@@ -533,6 +533,36 @@
+@@ -533,6 +533,34 @@
          }
      }
  
-+    }
-+
 +    void Player::syncToTime(const OTIO_NS::RationalTime& time, Playback playbackHint)
 +    {
 +        FTK_P();
