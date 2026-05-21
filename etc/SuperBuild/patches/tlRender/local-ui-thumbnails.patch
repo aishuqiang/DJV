@@ -1,10 +1,817 @@
-diff -ruN a/lib/tlRender/Timeline/Player.cpp b/lib/tlRender/Timeline/Player.cpp
---- a/lib/tlRender/Timeline/Player.cpp	2026-05-21 13:50:04
-+++ b/lib/tlRender/Timeline/Player.cpp	2026-05-21 13:50:04
-@@ -533,6 +533,34 @@
+diff --git a/lib/tlRender/IO/FFmpegCmd.cpp b/lib/tlRender/IO/FFmpegCmd.cpp
+index e10bbf7a..ab249b53 100644
+--- a/lib/tlRender/IO/FFmpegCmd.cpp
++++ b/lib/tlRender/IO/FFmpegCmd.cpp
+@@ -28,6 +28,11 @@ namespace tl
+                 std::stringstream ss(i->second);
+                 ss >> ffprobePath;
+             }
++            i = value.find("FFmpeg/HardwareDecode");
++            if (i != value.end())
++            {
++                hardwareDecode = i->second;
++            }
+         }
+
+         IOOptions Options::getIOOptions() const
+@@ -35,6 +40,7 @@ namespace tl
+             IOOptions out;
+             out["FFmpeg/FFmpegPath"] = ffmpegPath;
+             out["FFmpeg/FFprobePath"] = ffprobePath;
++            out["FFmpeg/HardwareDecode"] = hardwareDecode;
+             return out;
+         }
+
+@@ -42,7 +48,8 @@ namespace tl
+         {
+             return
+                 ffmpegPath == other.ffmpegPath &&
+-                ffprobePath == other.ffprobePath;
++                ffprobePath == other.ffprobePath &&
++                hardwareDecode == other.hardwareDecode;
+         }
+
+         bool Options::operator != (const Options& other) const
+@@ -84,6 +91,34 @@ namespace tl
+             {
+                 out = ftk::ImageType::RGBA_U8;
+             }
++            else if (
++                "yuv420p" == value ||
++                "yuv422p" == value ||
++                "yuv444p" == value ||
++                "yuvj420p" == value ||
++                "yuvj422p" == value ||
++                "yuvj444p" == value ||
++                "yuv420p10le" == value ||
++                "yuv420p10be" == value ||
++                "yuv422p10le" == value ||
++                "yuv422p10be" == value ||
++                "yuv444p10le" == value ||
++                "yuv444p10be" == value ||
++                "yuv420p12le" == value ||
++                "yuv420p12be" == value ||
++                "yuv422p12le" == value ||
++                "yuv422p12be" == value ||
++                "yuv444p12le" == value ||
++                "yuv444p12be" == value ||
++                "yuv420p16le" == value ||
++                "yuv420p16be" == value ||
++                "yuv422p16le" == value ||
++                "yuv422p16be" == value ||
++                "yuv444p16le" == value ||
++                "yuv444p16be" == value)
++            {
++                out = ftk::ImageType::RGB_U8;
++            }
+             return out;
+         }
+
+@@ -177,9 +212,8 @@ namespace tl
+         Pipe::~Pipe()
+         {
+             FTK_P();
++            terminate();
+             subprocess_destroy(&p.subprocess);
+-            //! \bug This is causing a SIGKILL on Linux when a read error occurs.
+-            //subprocess_terminate(&p.subprocess);
+         }
+
+         size_t Pipe::read(uint8_t* data, size_t size)
+@@ -202,6 +236,15 @@ namespace tl
+             return out;
+         }
+
++        void Pipe::terminate()
++        {
++            FTK_P();
++            if (subprocess_alive(&p.subprocess))
++            {
++                subprocess_terminate(&p.subprocess);
++            }
++        }
++
+         std::string Pipe::readAll()
+         {
+             FTK_P();
+@@ -274,12 +317,26 @@ namespace tl
+         {
+             json["FFprobe"] = value.ffprobePath;
+             json["FFmpeg"] = value.ffmpegPath;
++            json["HardwareDecode"] = value.hardwareDecode;
+         }
+
+         void from_json(const nlohmann::json& json, Options& value)
+         {
+-            json.at("FFprobe").get_to(value.ffprobePath);
+-            json.at("FFmpeg").get_to(value.ffmpegPath);
++            auto i = json.find("FFprobe");
++            if (i != json.end())
++            {
++                i->get_to(value.ffprobePath);
++            }
++            i = json.find("FFmpeg");
++            if (i != json.end())
++            {
++                i->get_to(value.ffmpegPath);
++            }
++            i = json.find("HardwareDecode");
++            if (i != json.end())
++            {
++                i->get_to(value.hardwareDecode);
++            }
          }
      }
- 
+ }
+diff --git a/lib/tlRender/IO/FFmpegCmd.h b/lib/tlRender/IO/FFmpegCmd.h
+index e0e847d7..65713250 100644
+--- a/lib/tlRender/IO/FFmpegCmd.h
++++ b/lib/tlRender/IO/FFmpegCmd.h
+@@ -22,6 +22,7 @@ namespace tl
+
+             std::string ffmpegPath  = "ffmpeg";
+             std::string ffprobePath = "ffprobe";
++            std::string hardwareDecode = "Auto";
+
+             TL_API IOOptions getIOOptions() const;
+
+diff --git a/lib/tlRender/IO/FFmpegCmdPrivate.h b/lib/tlRender/IO/FFmpegCmdPrivate.h
+index bdf29950..e1535071 100644
+--- a/lib/tlRender/IO/FFmpegCmdPrivate.h
++++ b/lib/tlRender/IO/FFmpegCmdPrivate.h
+@@ -17,6 +17,7 @@ namespace tl
+             ~Pipe();
+
+             size_t read(uint8_t*, size_t);
++            void terminate();
+
+             std::string readAll();
+
+diff --git a/lib/tlRender/IO/FFmpegCmdRead.cpp b/lib/tlRender/IO/FFmpegCmdRead.cpp
+index 3c396482..9c7efe95 100644
+--- a/lib/tlRender/IO/FFmpegCmdRead.cpp
++++ b/lib/tlRender/IO/FFmpegCmdRead.cpp
+@@ -5,14 +5,65 @@
+
+ #include <ftk/Core/Format.h>
+ #include <ftk/Core/LogSystem.h>
++#include <ftk/Core/String.h>
+
+ #include <atomic>
++#include <cstdint>
+ #include <thread>
++#include <vector>
+
+ namespace tl
+ {
+     namespace ffmpeg_cmd
+     {
++        namespace
++        {
++            void appendHardwareDecodeOptions(
++                std::vector<std::string>& cmd,
++                const std::string& value)
++            {
++                const std::string v = ftk::toLower(value);
++                std::string hwaccel;
++                if ("off" == v || "none" == v || "disabled" == v)
++                {
++                    return;
++                }
++                else if (v.empty() || "auto" == v)
++                {
++                    hwaccel = "auto";
++                }
++                else if ("videotoolbox" == v)
++                {
++                    hwaccel = "videotoolbox";
++                }
++                else if ("d3d11va" == v)
++                {
++                    hwaccel = "d3d11va";
++                }
++                else if ("dxva2" == v)
++                {
++                    hwaccel = "dxva2";
++                }
++                else if ("vaapi" == v)
++                {
++                    hwaccel = "vaapi";
++                }
++                else if ("qsv" == v)
++                {
++                    hwaccel = "qsv";
++                }
++                else if ("cuda" == v)
++                {
++                    hwaccel = "cuda";
++                }
++                if (!hwaccel.empty())
++                {
++                    cmd.push_back("-hwaccel");
++                    cmd.push_back(hwaccel);
++                }
++            }
++        }
++
+         struct Read::Private
+         {
+             IOInfo info;
+@@ -55,6 +106,7 @@ namespace tl
+             {
+                 OTIO_NS::RationalTime time = invalidTime;
+                 std::shared_ptr<Pipe> pipe = nullptr;
++                std::mutex pipeMutex;
+                 std::atomic<bool> running;
+                 std::condition_variable cv;
+                 std::thread thread;
+@@ -65,6 +117,7 @@ namespace tl
+             {
+                 OTIO_NS::RationalTime time = invalidTime;
+                 std::shared_ptr<Pipe> pipe = nullptr;
++                std::mutex pipeMutex;
+                 std::atomic<bool> running;
+                 std::condition_variable cv;
+                 std::thread thread;
+@@ -219,6 +272,24 @@ namespace tl
+                 std::unique_lock<std::mutex> lock(p.audioMutex.mutex);
+                 audioRequests = std::move(p.audioMutex.requests);
+             }
++            {
++                std::unique_lock<std::mutex> lock(p.thread.pipeMutex);
++                if (p.thread.pipe)
++                {
++                    p.thread.pipe->terminate();
++                    p.thread.pipe.reset();
++                    p.thread.time = invalidTime;
++                }
++            }
++            {
++                std::unique_lock<std::mutex> lock(p.audioThread.pipeMutex);
++                if (p.audioThread.pipe)
++                {
++                    p.audioThread.pipe->terminate();
++                    p.audioThread.pipe.reset();
++                    p.audioThread.time = invalidTime;
++                }
++            }
+             for (auto& request : infoRequests)
+             {
+                 request->promise.set_value(IOInfo());
+@@ -372,6 +443,24 @@ namespace tl
+                             {
+                                 info.type = ftk::ImageType::RGB_U8;
+                             }
++                            k = j.find("side_data_list");
++                            if (k != j.end())
++                            {
++                                for (const auto& sideData : k.value())
++                                {
++                                    auto rotation = sideData.find("rotation");
++                                    if (rotation != sideData.end())
++                                    {
++                                        const int degrees = rotation->get<int>();
++                                        if (90 == degrees || -90 == degrees ||
++                                            270 == degrees || -270 == degrees)
++                                        {
++                                            std::swap(info.size.w, info.size.h);
++                                        }
++                                        break;
++                                    }
++                                }
++                            }
+
+                             k = j.find("avg_frame_rate");
+                             if (k != j.end())
+@@ -629,13 +718,71 @@ namespace tl
+                 if (videoRequest &&
+                     !videoRequest->time.strictly_equal(p.thread.time))
+                 {
+-                    p.thread.time = videoRequest->time;
+-                    p.thread.pipe.reset();
++                    bool reachedRequestTime = false;
++                    std::shared_ptr<Pipe> pipe;
++                    {
++                        std::unique_lock<std::mutex> lock(p.thread.pipeMutex);
++                        pipe = p.thread.pipe;
++                    }
++                    if (pipe &&
++                        !p.info.video.empty() &&
++                        videoRequest->options == ioOptions &&
++                        videoRequest->time > p.thread.time)
++                    {
++                        const double rate = p.info.videoTime.duration().rate();
++                        const int64_t currentFrame =
++                            p.thread.time.rescaled_to(rate).round().value();
++                        const int64_t requestFrame =
++                            videoRequest->time.rescaled_to(rate).round().value();
++                        const int64_t framesToSkip = requestFrame - currentFrame;
++                        if (framesToSkip > 0 && framesToSkip <= 16)
++                        {
++                            try
++                            {
++                                std::vector<uint8_t> skipBuffer(p.info.video.front().getByteCount());
++                                for (int64_t i = 0; i < framesToSkip; ++i)
++                                {
++                                    const size_t bytesRead = pipe->read(
++                                        skipBuffer.data(),
++                                        skipBuffer.size());
++                                    if (bytesRead != skipBuffer.size())
++                                    {
++                                        break;
++                                    }
++                                    p.thread.time += OTIO_NS::RationalTime(
++                                        1.0,
++                                        p.info.videoTime.duration().rate());
++                                }
++                                reachedRequestTime =
++                                    videoRequest->time.strictly_equal(p.thread.time);
++                            }
++                            catch (const std::exception& e)
++                            {
++                                _logSystem.lock()->print("tl::Read::ffmpeg_cmd", e.what(), ftk::LogType::Error);
++                            }
++                        }
++                    }
++                    if (!reachedRequestTime)
++                    {
++                        p.thread.time = videoRequest->time;
++                        std::unique_lock<std::mutex> lock(p.thread.pipeMutex);
++                        if (p.thread.pipe)
++                        {
++                            p.thread.pipe->terminate();
++                            p.thread.pipe.reset();
++                        }
++                    }
+                 }
+
++                bool needsPipe = false;
++                if (videoRequest)
++                {
++                    std::unique_lock<std::mutex> lock(p.thread.pipeMutex);
++                    needsPipe = !p.thread.pipe || videoRequest->options != ioOptions;
++                }
+                 if (videoRequest &&
+                     !p.info.video.empty() &&
+-                    (!p.thread.pipe || videoRequest->options != ioOptions))
++                    needsPipe)
+                 {
+                     ioOptions = videoRequest->options;
+                     try
+@@ -648,6 +795,7 @@ namespace tl
+                         cmd.push_back("-ss");
+                         const double s = (p.thread.time - p.info.videoTime.start_time()).to_seconds();
+                         cmd.push_back(ftk::Format("{0}").arg(s));
++                        appendHardwareDecodeOptions(cmd, options.hardwareDecode);
+                         cmd.push_back("-i");
+                         cmd.push_back(_path.get());
+                         cmd.push_back("-f");
+@@ -656,6 +804,7 @@ namespace tl
+                         cmd.push_back(fromImageType(p.info.video.front().type));
+                         cmd.push_back("pipe:1");
+                         //std::cout << ftk::join(cmd, ' ') << std::endl;
++                        std::unique_lock<std::mutex> lock(p.thread.pipeMutex);
+                         p.thread.pipe = std::make_shared<Pipe>(cmd);
+                     }
+                     catch (const std::exception& e)
+@@ -670,13 +819,21 @@ namespace tl
+                     video.time = videoRequest->time;
+                     if (!p.info.video.empty())
+                     {
+-                        video.image = ftk::Image::create(p.info.video.front());
+-                        video.image->zero();
+-                        if (p.thread.pipe)
++                        auto image = ftk::Image::create(p.info.video.front());
++                        std::shared_ptr<Pipe> pipe;
++                        {
++                            std::unique_lock<std::mutex> lock(p.thread.pipeMutex);
++                            pipe = p.thread.pipe;
++                        }
++                        if (pipe)
+                         {
+                             try
+                             {
+-                                p.thread.pipe->read(video.image->getData(), video.image->getByteCount());
++                                const size_t bytesRead = pipe->read(image->getData(), image->getByteCount());
++                                if (bytesRead == image->getByteCount())
++                                {
++                                    video.image = image;
++                                }
+                             }
+                             catch (const std::exception& e)
+                             {
+@@ -689,7 +846,14 @@ namespace tl
+                 }
+             }
+
+-            p.thread.pipe.reset();
++            {
++                std::unique_lock<std::mutex> lock(p.thread.pipeMutex);
++                if (p.thread.pipe)
++                {
++                    p.thread.pipe->terminate();
++                    p.thread.pipe.reset();
++                }
++            }
+         }
+
+         void Read::_audioThread()
+@@ -722,11 +886,22 @@ namespace tl
+                     !request->timeRange.start_time().strictly_equal(p.audioThread.time))
+                 {
+                     p.audioThread.time = request->timeRange.start_time();
+-                    p.audioThread.pipe.reset();
++                    std::unique_lock<std::mutex> lock(p.audioThread.pipeMutex);
++                    if (p.audioThread.pipe)
++                    {
++                        p.audioThread.pipe->terminate();
++                        p.audioThread.pipe.reset();
++                    }
+                 }
+
++                bool needsPipe = false;
++                if (request)
++                {
++                    std::unique_lock<std::mutex> lock(p.audioThread.pipeMutex);
++                    needsPipe = !p.audioThread.pipe || request->options != ioOptions;
++                }
+                 if (request &&
+-                    (!p.audioThread.pipe || request->options != ioOptions))
++                    needsPipe)
+                 {
+                     ioOptions = request->options;
+                     try
+@@ -745,6 +920,7 @@ namespace tl
+                         cmd.push_back(fromAudioType(p.info.audio.type));
+                         cmd.push_back("pipe:1");
+                         //std::cout << ftk::join(cmd, ' ') << std::endl;
++                        std::unique_lock<std::mutex> lock(p.audioThread.pipeMutex);
+                         p.audioThread.pipe = std::make_shared<Pipe>(cmd);
+                     }
+                     catch (const std::exception& e)
+@@ -761,11 +937,16 @@ namespace tl
+                         p.info.audio,
+                         request->timeRange.duration().rescaled_to(1.0).value() * p.info.audio.sampleRate);
+                     audio.audio->zero();
+-                    if (p.audioThread.pipe)
++                    std::shared_ptr<Pipe> pipe;
++                    {
++                        std::unique_lock<std::mutex> lock(p.audioThread.pipeMutex);
++                        pipe = p.audioThread.pipe;
++                    }
++                    if (pipe)
+                     {
+                         try
+                         {
+-                            p.audioThread.pipe->read(audio.audio->getData(), audio.audio->getByteCount());
++                            pipe->read(audio.audio->getData(), audio.audio->getByteCount());
+                         }
+                         catch (const std::exception& e)
+                         {
+@@ -777,7 +958,14 @@ namespace tl
+                 }
+             }
+
+-            p.audioThread.pipe.reset();
++            {
++                std::unique_lock<std::mutex> lock(p.audioThread.pipeMutex);
++                if (p.audioThread.pipe)
++                {
++                    p.audioThread.pipe->terminate();
++                    p.audioThread.pipe.reset();
++                }
++            }
+         }
+     }
+ }
+diff --git a/lib/tlRender/IO/FFmpegRead.cpp b/lib/tlRender/IO/FFmpegRead.cpp
+index 101fcb50..8c1706a3 100644
+--- a/lib/tlRender/IO/FFmpegRead.cpp
++++ b/lib/tlRender/IO/FFmpegRead.cpp
+@@ -100,6 +100,11 @@ namespace tl
+                 std::stringstream ss(i->second);
+                 ss >> p.options.threadCount;
+             }
++            i = options.find("FFmpeg/HardwareDecode");
++            if (i != options.end())
++            {
++                p.options.hardwareDecode = i->second;
++            }
+             i = options.find("FFmpeg/RequestTimeout");
+             if (i != options.end())
+             {
+diff --git a/lib/tlRender/IO/FFmpegReadPrivate.h b/lib/tlRender/IO/FFmpegReadPrivate.h
+index 75755582..7409d0fe 100644
+--- a/lib/tlRender/IO/FFmpegReadPrivate.h
++++ b/lib/tlRender/IO/FFmpegReadPrivate.h
+@@ -39,6 +39,7 @@ namespace tl
+         struct ReadOptions
+         {
+             bool yuvToRGBConversion = false;
++            std::string hardwareDecode;
+             AudioInfo audioConvertInfo;
+             size_t threadCount = Options().threadCount;
+             size_t requestTimeout = 5;
+@@ -86,6 +87,7 @@ namespace tl
+             int _avStream = -1;
+             std::map<int, AVCodecParameters*> _avCodecParameters;
+             std::map<int, AVCodecContext*> _avCodecContext;
++            AVBufferRef* _avHWDeviceContext = nullptr;
+             AVFrame* _avFrame = nullptr;
+             AVFrame* _avFrame2 = nullptr;
+             AVPixelFormat _avInputPixelFormat = AV_PIX_FMT_NONE;
+diff --git a/lib/tlRender/IO/FFmpegReadVideo.cpp b/lib/tlRender/IO/FFmpegReadVideo.cpp
+index 176aa91c..0c9857ff 100644
+--- a/lib/tlRender/IO/FFmpegReadVideo.cpp
++++ b/lib/tlRender/IO/FFmpegReadVideo.cpp
+@@ -4,9 +4,11 @@
+ #include <tlRender/IO/FFmpegReadPrivate.h>
+
+ #include <ftk/Core/Format.h>
++#include <ftk/Core/String.h>
+
+ extern "C"
+ {
++#include <libavutil/hwcontext.h>
+ #include <libavutil/imgutils.h>
+ #include <libavutil/opt.h>
+
+@@ -16,6 +18,23 @@ namespace tl
+ {
+     namespace ffmpeg
+     {
++        namespace
++        {
++            AVHWDeviceType getHWDeviceType(const std::string& value)
++            {
++                std::string v = ftk::toLower(value);
++                if (v.empty() || "auto" == v)
++                {
++                    return AV_HWDEVICE_TYPE_NONE;
++                }
++                if ("off" == v || "none" == v || "disabled" == v)
++                {
++                    return AV_HWDEVICE_TYPE_NONE;
++                }
++                return av_hwdevice_find_type_by_name(v.c_str());
++            }
++        }
++
+         ReadVideo::ReadVideo(
+             const std::string& fileName,
+             const std::vector<ftk::MemFile>& memory,
+@@ -120,6 +139,12 @@ namespace tl
+                 }
+                 _avCodecContext[_avStream]->thread_count = options.threadCount;
+                 _avCodecContext[_avStream]->thread_type = FF_THREAD_FRAME;
++                const AVHWDeviceType hwDeviceType = getHWDeviceType(options.hardwareDecode);
++                if (AV_HWDEVICE_TYPE_NONE != hwDeviceType &&
++                    av_hwdevice_ctx_create(&_avHWDeviceContext, hwDeviceType, nullptr, nullptr, 0) >= 0)
++                {
++                    _avCodecContext[_avStream]->hw_device_ctx = av_buffer_ref(_avHWDeviceContext);
++                }
+                 r = avcodec_open2(_avCodecContext[_avStream], avVideoCodec, 0);
+                 if (r < 0)
+                 {
+@@ -192,18 +217,8 @@ namespace tl
+                 case AV_PIX_FMT_YUV420P12LE:
+                 case AV_PIX_FMT_YUV420P16BE:
+                 case AV_PIX_FMT_YUV420P16LE:
+-                    if (options.yuvToRGBConversion)
+-                    {
+-                        _avOutputPixelFormat = AV_PIX_FMT_RGB48;
+-                        _info.type = ftk::ImageType::RGB_U16;
+-                    }
+-                    else
+-                    {
+-                        //! \todo Use the _info.layout.endian field instead of
+-                        //! converting endianness.
+-                        _avOutputPixelFormat = AV_PIX_FMT_YUV420P16LE;
+-                        _info.type = ftk::ImageType::YUV_420P_U16;
+-                    }
++                    _avOutputPixelFormat = AV_PIX_FMT_RGB24;
++                    _info.type = ftk::ImageType::RGB_U8;
+                     break;
+                 case AV_PIX_FMT_YUV422P10BE:
+                 case AV_PIX_FMT_YUV422P10LE:
+@@ -211,18 +226,8 @@ namespace tl
+                 case AV_PIX_FMT_YUV422P12LE:
+                 case AV_PIX_FMT_YUV422P16BE:
+                 case AV_PIX_FMT_YUV422P16LE:
+-                    if (options.yuvToRGBConversion)
+-                    {
+-                        _avOutputPixelFormat = AV_PIX_FMT_RGB48;
+-                        _info.type = ftk::ImageType::RGB_U16;
+-                    }
+-                    else
+-                    {
+-                        //! \todo Use the _info.layout.endian field instead of
+-                        //! converting endianness.
+-                        _avOutputPixelFormat = AV_PIX_FMT_YUV422P16LE;
+-                        _info.type = ftk::ImageType::YUV_422P_U16;
+-                    }
++                    _avOutputPixelFormat = AV_PIX_FMT_RGB24;
++                    _info.type = ftk::ImageType::RGB_U8;
+                     break;
+                 case AV_PIX_FMT_YUV444P10BE:
+                 case AV_PIX_FMT_YUV444P10LE:
+@@ -230,18 +235,8 @@ namespace tl
+                 case AV_PIX_FMT_YUV444P12LE:
+                 case AV_PIX_FMT_YUV444P16BE:
+                 case AV_PIX_FMT_YUV444P16LE:
+-                    if (options.yuvToRGBConversion)
+-                    {
+-                        _avOutputPixelFormat = AV_PIX_FMT_RGB48;
+-                        _info.type = ftk::ImageType::RGB_U16;
+-                    }
+-                    else
+-                    {
+-                        //! \todo Use the _info.layout.endian field instead of
+-                        //! converting endianness.
+-                        _avOutputPixelFormat = AV_PIX_FMT_YUV444P16LE;
+-                        _info.type = ftk::ImageType::YUV_444P_U16;
+-                    }
++                    _avOutputPixelFormat = AV_PIX_FMT_RGB24;
++                    _info.type = ftk::ImageType::RGB_U8;
+                     break;
+                 case AV_PIX_FMT_YUVA420P:
+                 case AV_PIX_FMT_YUVA422P:
+@@ -409,6 +404,10 @@ namespace tl
+             {
+                 avcodec_free_context(&i.second);
+             }
++            if (_avHWDeviceContext)
++            {
++                av_buffer_unref(&_avHWDeviceContext);
++            }
+             for (auto i : _avCodecParameters)
+             {
+                 avcodec_parameters_free(&i.second);
+@@ -735,7 +734,7 @@ namespace tl
+                     {
+                         std::memcpy(
+                             data + w * 3 * i,
+-                            data0 + linesize0 * 3 * i,
++                            data0 + linesize0 * i,
+                             w * 3);
+                     }
+                     break;
+@@ -753,7 +752,7 @@ namespace tl
+                     {
+                         std::memcpy(
+                             data + w * 4 * i,
+-                            data0 + linesize0 * 4 * i,
++                            data0 + linesize0 * i,
+                             w * 4);
+                     }
+                     break;
+@@ -798,15 +797,14 @@ namespace tl
+                     w,
+                     h,
+                     1);
+-                /*sws_scale(
++                sws_scale(
+                     _swsContext,
+                     (uint8_t const* const*)_avFrame->data,
+                     _avFrame->linesize,
+                     0,
+-                    _avFrame->height,
++                    static_cast<int>(h),
+                     _avFrame2->data,
+-                    _avFrame2->linesize);*/
+-                sws_scale_frame(_swsContext, _avFrame2, _avFrame);
++                    _avFrame2->linesize);
+             }
+         }
+     }
+diff --git a/lib/tlRender/Timeline/Player.cpp b/lib/tlRender/Timeline/Player.cpp
+index 6caeab32..717f6b7c 100644
+--- a/lib/tlRender/Timeline/Player.cpp
++++ b/lib/tlRender/Timeline/Player.cpp
+@@ -12,8 +12,49 @@
+ #include <ftk/Core/String.h>
+ #include <ftk/Core/Time.h>
+
++#include <cmath>
++
+ namespace tl
+ {
++    namespace
++    {
++        const double minPlaybackSpeedMult = 1.0 / 15.0;
++        const double maxPlaybackSpeedMult = 15.0;
++
++        double clampPlaybackValue(double value, double min, double max)
++        {
++            if (value < min)
++            {
++                return min;
++            }
++            if (value > max)
++            {
++                return max;
++            }
++            return value;
++        }
++
++        double clampPlaybackSpeed(double value, double defaultSpeed)
++        {
++            return defaultSpeed > 0.0 ?
++                clampPlaybackValue(
++                    value,
++                    defaultSpeed * minPlaybackSpeedMult,
++                    defaultSpeed * maxPlaybackSpeedMult) :
++                value;
++        }
++
++        double clampPlaybackSpeedMult(double value, double speed, double defaultSpeed)
++        {
++            return speed > 0.0 && defaultSpeed > 0.0 ?
++                clampPlaybackValue(
++                    value,
++                    defaultSpeed * minPlaybackSpeedMult / speed,
++                    defaultSpeed * maxPlaybackSpeedMult / speed) :
++                value;
++        }
++    }
++
+     bool PlayerCacheInfo::operator == (const PlayerCacheInfo& other) const
+     {
+         return
+@@ -160,6 +201,7 @@ namespace tl
+         p.mutex.state.currentTime = p.currentTime->get();
+         p.mutex.state.inOutRange = p.inOutRange->get();
+         p.mutex.state.audioOffset = p.audioOffset->get();
++        p.mutex.state.speed = p.speed->get() * p.speedMult->get();
+         p.mutex.state.cacheOptions = p.cacheOptions->get();
+         p.audioMutex.state.speed = p.speed->get() * p.speedMult->get();
+         p.log();
+@@ -288,16 +330,27 @@ namespace tl
+     void Player::setSpeed(double value)
+     {
+         FTK_P();
+-        if (p.speed->setIfChanged(value))
++        value = clampPlaybackSpeed(value, getDefaultSpeed());
++        const double speedMult = clampPlaybackSpeedMult(
++            p.speedMult->get(),
++            value,
++            getDefaultSpeed());
++        const bool speedChanged = p.speed->setIfChanged(value);
++        const bool speedMultChanged = p.speedMult->setIfChanged(speedMult);
++        if (speedChanged || speedMultChanged)
+         {
+-            const double actualSpeed = value * p.speedMult->get();
++            const double actualSpeed = value * speedMult;
+             p.actualSpeed->setIfChanged(actualSpeed);
++            {
++                std::unique_lock<std::mutex> lock(p.mutex.mutex);
++                p.mutex.state.speed = actualSpeed;
++            }
+             {
+                 std::unique_lock<std::mutex> lock(p.audioMutex.mutex);
+                 p.audioMutex.state.speed = actualSpeed;
+                 p.audioReset(p.currentTime->get());
+             }
+-            if (!p.hasAudio())
++            if (!p.useAudioClock(p.playback->get()))
+             {
+                 p.playbackReset(p.currentTime->get());
+             }
+@@ -344,6 +397,7 @@ namespace tl
+     void Player::setPlayback(Playback value)
+     {
+         FTK_P();
++        const Playback previousToggle = p.toggle;
+
+         // Update the frame for loop modes.
+         switch (p.loop->get())
+@@ -416,7 +470,7 @@ namespace tl
+                     p.audioMutex.state.playback = value;
+                     p.audioReset(p.currentTime->get());
+                 }
+-                if (!p.hasAudio())
++                if (!p.useAudioClock(value))
+                 {
+                     p.playbackReset(p.currentTime->get());
+                 }
+@@ -521,18 +575,47 @@ namespace tl
+                 std::unique_lock<std::mutex> lock(p.mutex.mutex);
+                 p.mutex.state.currentTime = tmp;
+                 p.mutex.clearRequests = true;
++                p.mutex.currentVideoFrame.clear();
+             }
+             {
+                 std::unique_lock<std::mutex> lock(p.audioMutex.mutex);
+                 p.audioReset(tmp);
+             }
+-            if (!p.hasAudio())
++            if (!p.useAudioClock(p.playback->get()))
+             {
+                 p.playbackReset(tmp);
+             }
+         }
+     }
+
 +    void Player::syncToTime(const OTIO_NS::RationalTime& time, Playback playbackHint)
 +    {
 +        FTK_P();
@@ -36,25 +843,1584 @@ diff -ruN a/lib/tlRender/Timeline/Player.cpp b/lib/tlRender/Timeline/Player.cpp
      void Player::timeAction(TimeAction time)
      {
          FTK_P();
-diff -ruN a/lib/tlRender/Timeline/Player.h b/lib/tlRender/Timeline/Player.h
---- a/lib/tlRender/Timeline/Player.h	2026-05-21 13:50:03
-+++ b/lib/tlRender/Timeline/Player.h	2026-05-21 13:50:04
-@@ -212,6 +212,10 @@
+@@ -820,16 +903,24 @@ namespace tl
+     void Player::_setSpeedMult(double value)
+     {
+         FTK_P();
++        value = clampPlaybackSpeedMult(
++            value,
++            p.speed->get(),
++            getDefaultSpeed());
+         if (p.speedMult->setIfChanged(value))
+         {
+             const double actualSpeed = p.speed->get() * value;
+             p.actualSpeed->setIfChanged(actualSpeed);
++            {
++                std::unique_lock<std::mutex> lock(p.mutex.mutex);
++                p.mutex.state.speed = actualSpeed;
++            }
+             {
+                 std::unique_lock<std::mutex> lock(p.audioMutex.mutex);
+                 p.audioMutex.state.speed = actualSpeed;
+                 p.audioReset(p.currentTime->get());
+             }
+-            if (!p.hasAudio())
++            if (!p.useAudioClock(p.playback->get()))
+             {
+                 p.playbackReset(p.currentTime->get());
+             }
+@@ -840,6 +931,15 @@ namespace tl
+     {
+         FTK_P();
+
++        // Snapshot the most recently displayed video frame before advancing the
++        // transport so frame-locked playback can stall when decode falls
++        // behind instead of letting time run ahead of the image.
++        std::vector<VideoFrame> displayedVideoFrame;
++        {
++            std::unique_lock<std::mutex> lock(p.mutex.mutex);
++            displayedVideoFrame = p.mutex.currentVideoFrame;
++        }
++
+         // Calculate the current time.
+         const double timelineSpeed = p.timeRange.duration().rate();
+         const auto playback = p.playback->get();
+@@ -847,7 +947,8 @@ namespace tl
+         {
+             OTIO_NS::RationalTime start = invalidTime;
+             double t = 0.0;
+-            if (p.hasAudio())
++            const bool useAudioClock = p.useAudioClock(playback);
++            if (useAudioClock)
+             {
+                 std::unique_lock<std::mutex> lock(p.audioMutex.mutex);
+                 start = p.audioMutex.start;
+@@ -869,13 +970,129 @@ namespace tl
+                 start +
+                 OTIO_NS::RationalTime(t, 1.0).rescaled_to(timelineSpeed).floor(),
+                 looped);
++            OTIO_NS::RationalTime displayLockedTime = currentTime;
++            if (!useAudioClock)
++            {
++                const OTIO_NS::RationalTime previousTime = p.currentTime->get();
++                bool useDisplayedVideoFrame = false;
++                OTIO_NS::RationalTime displayedTime = invalidTime;
++                if (!displayedVideoFrame.empty() &&
++                    !displayedVideoFrame.front().time.strictly_equal(invalidTime))
++                {
++                    displayedTime = displayedVideoFrame.front().time;
++                    const OTIO_NS::RationalTime previousTimeAtRate =
++                        previousTime.rescaled_to(displayedTime.rate());
++                    const double displayedDistanceFrames =
++                        std::abs(previousTimeAtRate.value() - displayedTime.value());
++                    const double playbackSpeedMult =
++                        timelineSpeed > 0.0 ?
++                        std::abs((p.speed->get() * p.speedMult->get()) / timelineSpeed) :
++                        1.0;
++                    const int videoLayer = p.videoLayer->get();
++                    const bool highMemoryVideo =
++                        videoLayer >= 0 &&
++                        videoLayer < p.ioInfo.video.size() &&
++                        p.ioInfo.video[videoLayer].getByteCount() >= 16 * 1024 * 1024;
++                    const bool preserveFastForwardPipe =
++                        highMemoryVideo &&
++                        p.playerOptions.videoRequestMax <= 8;
++                    const double displayedFrameTolerance = 64.0;
++                    // After seek or direction changes a stale frame from the old
++                    // position can arrive one tick late. Do not let that frame
++                    // drive reverse clock locking or the transport can wrap to
++                    // the end before the requested cache block is ready.
++                    useDisplayedVideoFrame = displayedDistanceFrames <= displayedFrameTolerance;
++                }
++                if (useDisplayedVideoFrame)
++                {
++                    const OTIO_NS::RationalTime currentTimeAtRate =
++                        currentTime.rescaled_to(displayedTime.rate());
++                    const double driftFrames =
++                        std::abs(currentTimeAtRate.value() - displayedTime.value());
++                    const double playbackSpeedMult =
++                        timelineSpeed > 0.0 ?
++                        std::abs((p.speed->get() * p.speedMult->get()) / timelineSpeed) :
++                        1.0;
++                    const double actualSpeed = p.speed->get() * p.speedMult->get();
++                    const int videoLayer = p.videoLayer->get();
++                    const bool highMemoryVideo =
++                        videoLayer >= 0 &&
++                        videoLayer < p.ioInfo.video.size() &&
++                        p.ioInfo.video[videoLayer].getByteCount() >= 16 * 1024 * 1024;
++                    const bool preserveFastForwardPipe =
++                        highMemoryVideo &&
++                        p.playerOptions.videoRequestMax <= 8;
++                    const bool skipForwardPlayback =
++                        Playback::Forward == playback &&
++                        !preserveFastForwardPipe &&
++                        (playbackSpeedMult > 1.05 ||
++                            (playbackSpeedMult < 0.95 && actualSpeed > 30.0));
++                    const double maxDisplayLeadFrames =
++                        Playback::Reverse == playback ?
++                        0.0 :
++                        (skipForwardPlayback ?
++                            playbackSpeedMult * timelineSpeed :
++                            2.0);
++                    const bool clockAhead =
++                        Playback::Reverse == playback ?
++                        currentTime < displayedTime :
++                        currentTime > displayedTime;
++                    if (clockAhead &&
++                        driftFrames > maxDisplayLeadFrames)
++                    {
++                        displayLockedTime = displayedTime;
++                        p.playbackReset(displayedTime);
++                    }
++                }
++                if (!useDisplayedVideoFrame &&
++                    !currentTime.strictly_equal(previousTime))
++                {
++                    const OTIO_NS::RationalTime currentTimeAtRate =
++                        currentTime.rescaled_to(previousTime.rate());
++                    const double driftFrames =
++                        std::abs(currentTimeAtRate.value() - previousTime.value());
++                    // Give the decode thread a couple of frames of headroom to
++                    // produce the first new image. Resetting immediately on the
++                    // first frame step can leave no-audio playback stuck on the
++                    // previous image even when the next frame is about to land.
++                    const double playbackSpeedMult =
++                        timelineSpeed > 0.0 ?
++                        std::abs((p.speed->get() * p.speedMult->get()) / timelineSpeed) :
++                        1.0;
++                    const double actualSpeed = p.speed->get() * p.speedMult->get();
++                    const int videoLayer = p.videoLayer->get();
++                    const bool highMemoryVideo =
++                        videoLayer >= 0 &&
++                        videoLayer < p.ioInfo.video.size() &&
++                        p.ioInfo.video[videoLayer].getByteCount() >= 16 * 1024 * 1024;
++                    const bool preserveFastForwardPipe =
++                        highMemoryVideo &&
++                        p.playerOptions.videoRequestMax <= 8;
++                    const bool skipForwardPlayback =
++                        Playback::Forward == playback &&
++                        !preserveFastForwardPipe &&
++                        (playbackSpeedMult > 1.05 ||
++                            (playbackSpeedMult < 0.95 && actualSpeed > 30.0));
++                    const double maxUndisplayedLeadFrames =
++                        Playback::Reverse == playback ?
++                        0.0 :
++                        (skipForwardPlayback ?
++                            playbackSpeedMult * timelineSpeed :
++                            2.0);
++                    if (driftFrames > maxUndisplayedLeadFrames)
++                    {
++                        displayLockedTime = previousTime;
++                        p.playbackReset(previousTime);
++                    }
++                }
++            }
+             //const double currentTimeDiff = abs(currentTime.value() - p.currentTime->get().value());
+-            if (p.currentTime->setIfChanged(currentTime))
++            if (p.currentTime->setIfChanged(displayLockedTime))
+             {
+                 //std::cout << "current time: " << p.currentTime->get() << " / " << currentTimeDiff << std::endl;
+                 if (looped)
+                 {
+-                    p.seek->setAlways(currentTime);
++                    p.seek->setAlways(displayLockedTime);
+                 }
+             }
+         }
+@@ -947,11 +1164,23 @@ namespace tl
+             // Update the current video frame.
+             if (!p.ioInfo.video.empty())
+             {
+-                const auto i = p.thread.videoCache.find(p.thread.state.currentTime);
+-                if (i != p.thread.videoCache.end())
++                OTIO_NS::RationalTime displayedTime = invalidTime;
++                {
++                    std::unique_lock<std::mutex> lock(p.mutex.mutex);
++                    if (!p.mutex.currentVideoFrame.empty())
++                    {
++                        displayedTime = p.mutex.currentVideoFrame.front().time;
++                    }
++                }
++                std::vector<VideoFrame> videoFrameList;
++                if (p.findCurrentVideoFrame(
++                    p.thread.state.currentTime,
++                    p.thread.state.playback,
++                    displayedTime,
++                    videoFrameList))
+                 {
+                     std::unique_lock<std::mutex> lock(p.mutex.mutex);
+-                    p.mutex.currentVideoFrame = i->second;
++                    p.mutex.currentVideoFrame = videoFrameList;
+                 }
+                 else if (p.thread.state.playback != Playback::Stop)
+                 {
+@@ -968,7 +1197,7 @@ namespace tl
+                             p.audioMutex.state.muteTimeout = now + p.playerOptions.muteTimeout;
+                             p.audioReset(p.currentTime->get());
+                         }
+-                        if (!p.hasAudio())
++                        if (!p.useAudioClock(p.playback->get()))
+                         {
+                             p.playbackReset(p.currentTime->get());
+                         }
+diff --git a/lib/tlRender/Timeline/Player.h b/lib/tlRender/Timeline/Player.h
+index ce86db77..2b19b798 100644
+--- a/lib/tlRender/Timeline/Player.h
++++ b/lib/tlRender/Timeline/Player.h
+@@ -212,6 +212,11 @@ namespace tl
          //! Seek to the given time.
          TL_API void seek(const OTIO_NS::RationalTime&);
- 
+
 +        //! Synchronize to an externally-driven transport time without starting
-+        //! local playback. Used for follower players in split sync mode.
++        //! local playback. This is used for follower players in split sync
++        //! mode so they do not drift on their own clocks.
 +        TL_API void syncToTime(const OTIO_NS::RationalTime&, Playback playbackHint);
 +
          //! Time action.
          TL_API void timeAction(TimeAction);
- 
-diff -ruN a/lib/tlRender/UI/ThumbnailSystem.cpp b/lib/tlRender/UI/ThumbnailSystem.cpp
---- a/lib/tlRender/UI/ThumbnailSystem.cpp	2026-05-21 13:50:01
-+++ b/lib/tlRender/UI/ThumbnailSystem.cpp	2026-05-21 13:50:04
-@@ -40,7 +40,12 @@
- 
+
+diff --git a/lib/tlRender/Timeline/PlayerAudio.cpp b/lib/tlRender/Timeline/PlayerAudio.cpp
+index 41aa6d57..11bddf1e 100644
+--- a/lib/tlRender/Timeline/PlayerAudio.cpp
++++ b/lib/tlRender/Timeline/PlayerAudio.cpp
+@@ -137,6 +137,14 @@ namespace tl
+         return out;
+     }
+
++    bool Player::Private::useAudioClock(Playback playbackValue) const
++    {
++        // Video playback is the visible source of truth. High-bitrate sources
++        // can decode slower than the audio device clock; letting audio drive
++        // transport then skips far ahead of the frames available to display.
++        return hasAudio() && ioInfo.video.empty() && Playback::Reverse != playbackValue;
++    }
++
+     namespace
+     {
+ #if defined(TLRENDER_SDL2)
+@@ -221,6 +229,13 @@ namespace tl
+         }
+ #endif // TLRENDER_SDL2
+
++        if (0 == playerOptions.audioRequestMax)
++        {
++            audioDevices = false;
++            audioInfo = AudioInfo();
++            return;
++        }
++
+         AudioDeviceID id = audioDevice->get();
+         auto audioSystem = context->getSystem<AudioSystem>();
+         auto devices = audioSystem->getDevices();
+diff --git a/lib/tlRender/Timeline/PlayerOptions.h b/lib/tlRender/Timeline/PlayerOptions.h
+index 8aad1b97..6da72238 100644
+--- a/lib/tlRender/Timeline/PlayerOptions.h
++++ b/lib/tlRender/Timeline/PlayerOptions.h
+@@ -36,10 +36,10 @@ namespace tl
+         PlayerCacheOptions cache;
+
+         //! Maximum number of video requests.
+-        size_t videoRequestMax = 16;
++        size_t videoRequestMax = 64;
+
+         //! Maximum number of audio requests.
+-        size_t audioRequestMax = 16;
++        size_t audioRequestMax = 32;
+
+         //! Audio buffer frame count.
+         size_t audioBufferFrameCount = 500;
+diff --git a/lib/tlRender/Timeline/PlayerPrivate.cpp b/lib/tlRender/Timeline/PlayerPrivate.cpp
+index b184268d..f036d5cd 100644
+--- a/lib/tlRender/Timeline/PlayerPrivate.cpp
++++ b/lib/tlRender/Timeline/PlayerPrivate.cpp
+@@ -9,8 +9,43 @@
+ #include <ftk/Core/Format.h>
+ #include <ftk/Core/String.h>
+
++#include <algorithm>
++#include <cmath>
++#include <limits>
++
+ namespace tl
+ {
++    namespace
++    {
++        bool isValidVideoFrame(const VideoFrame& value)
++        {
++            for (const auto& layer : value.layers)
++            {
++                if (layer.image || layer.imageB)
++                {
++                    return true;
++                }
++            }
++            return false;
++        }
++
++        bool isValidVideoFrameList(const std::vector<VideoFrame>& value)
++        {
++            if (value.empty())
++            {
++                return false;
++            }
++            for (const auto& frame : value)
++            {
++                if (!isValidVideoFrame(frame))
++                {
++                    return false;
++                }
++            }
++            return true;
++        }
++    }
++
+     OTIO_NS::RationalTime Player::Private::loopPlayback(const OTIO_NS::RationalTime& time, bool& looped)
+     {
+         OTIO_NS::RationalTime out = time;
+@@ -28,7 +63,7 @@ namespace tl
+                     std::unique_lock<std::mutex> lock(audioMutex.mutex);
+                     audioReset(out);
+                 }
+-                if (!hasAudio())
++                if (!useAudioClock(playback->get()))
+                 {
+                     playbackReset(out);
+                 }
+@@ -87,7 +122,7 @@ namespace tl
+                     audioMutex.state.playback = Playback::Forward;
+                     audioReset(out);
+                 }
+-                if (!hasAudio())
++                if (!useAudioClock(Playback::Forward))
+                 {
+                     playbackReset(out);
+                 }
+@@ -108,7 +143,7 @@ namespace tl
+                     audioMutex.state.playback = Playback::Reverse;
+                     audioReset(out);
+                 }
+-                if (!hasAudio())
++                if (!useAudioClock(Playback::Reverse))
+                 {
+                     playbackReset(out);
+                 }
+@@ -123,22 +158,35 @@ namespace tl
+
+     void Player::Private::clearRequests()
+     {
+-        std::vector<std::vector<uint64_t> > ids(1 + thread.state.compare.size());
++        std::map<std::shared_ptr<Timeline>, std::vector<uint64_t>, std::owner_less<std::shared_ptr<Timeline> > > videoIds;
++        std::vector<uint64_t> audioIds;
+         for (const auto& i : thread.videoRequests)
+         {
+-            for (size_t j = 0; j < i.second.size() && j < ids.size(); ++j)
++            for (const auto& pending : i.second)
+             {
+-                ids[j].push_back(i.second[j].id);
++                if (pending.timeline && pending.request.id)
++                {
++                    videoIds[pending.timeline].push_back(pending.request.id);
++                }
+             }
+         }
+         for (const auto& i : thread.audioRequests)
+         {
+-            ids[0].push_back(i.second.id);
++            if (i.second.id)
++            {
++                audioIds.push_back(i.second.id);
++            }
+         }
+-        timeline->cancelRequests(ids[0]);
+-        for (size_t i = 0; i < thread.state.compare.size(); ++i)
++        for (const auto& i : videoIds)
+         {
+-            thread.state.compare[i]->cancelRequests(ids[i + 1]);
++            if (i.first && !i.second.empty())
++            {
++                i.first->cancelRequests(i.second);
++            }
++        }
++        if (!audioIds.empty())
++        {
++            timeline->cancelRequests(audioIds);
+         }
+         thread.videoRequests.clear();
+         thread.audioRequests.clear();
+@@ -157,6 +205,142 @@ namespace tl
+         }
+     }
+
++    bool Player::Private::findCurrentVideoFrame(
++        const OTIO_NS::RationalTime& time,
++        Playback playbackValue,
++        const OTIO_NS::RationalTime& displayedTime,
++        std::vector<VideoFrame>& out) const
++    {
++        out.clear();
++        if (thread.videoCache.empty() || time.strictly_equal(invalidTime))
++        {
++            return false;
++        }
++
++        const auto end = thread.videoCache.end();
++        const auto begin = thread.videoCache.begin();
++        const auto exact = thread.videoCache.find(time);
++        auto frameDiff = [&](const OTIO_NS::RationalTime& cachedTime)
++        {
++            const OTIO_NS::RationalTime timeAtRate = time.rescaled_to(cachedTime.rate());
++            return std::abs(timeAtRate.value() - cachedTime.value());
++        };
++        if (exact != end)
++        {
++            if (!displayedTime.strictly_equal(invalidTime) &&
++                exact->first.strictly_equal(displayedTime) &&
++                playbackValue != Playback::Stop)
++            {
++                const auto next = std::next(exact);
++                const auto prevExact =
++                    exact != begin ?
++                    std::prev(exact) :
++                    end;
++                if (Playback::Forward == playbackValue &&
++                    next != end &&
++                    frameDiff(next->first) <= 1.0)
++                {
++                    out = next->second;
++                    return true;
++                }
++                if (Playback::Reverse == playbackValue &&
++                    prevExact != end &&
++                    frameDiff(prevExact->first) <= 1.0)
++                {
++                    out = prevExact->second;
++                    return true;
++                }
++            }
++            out = exact->second;
++            return true;
++        }
++
++        const auto lower = thread.videoCache.lower_bound(time);
++        const auto prev =
++            lower != begin ?
++            std::prev(lower) :
++            end;
++
++        // Keep playback visually moving when the exact frame has not landed in
++        // the cache yet. We only borrow adjacent decoded frames within one
++        // frame of the requested time so the transport still tracks the real
++        // picture without jumping across large gaps.
++        const double playbackSpeedMult =
++            time.rate() > 0.0 && thread.state.speed > 0.0 ?
++            std::abs(thread.state.speed / time.rate()) :
++            1.0;
++        const bool relaxedForwardPlayback =
++            Playback::Forward == playbackValue &&
++            (playbackSpeedMult > 1.05 ||
++                (playbackSpeedMult < 0.95 && thread.state.speed > 30.0));
++        const bool highMemorySyncPlayback =
++            thread.state.videoLayer >= 0 &&
++            thread.state.videoLayer < ioInfo.video.size() &&
++            ioInfo.video[thread.state.videoLayer].getByteCount() >= 16 * 1024 * 1024 &&
++            playerOptions.videoRequestMax <= 8;
++        const bool allowRelaxedForwardPlayback =
++            relaxedForwardPlayback && !highMemorySyncPlayback;
++        const double skipFrameStep =
++            allowRelaxedForwardPlayback ?
++            std::max(
++                1.0,
++                playbackSpeedMult > 1.05 ?
++                    std::round(playbackSpeedMult * 4.0) :
++                    1.0) :
++            1.0;
++        const double maxAdjacentFrameDiff =
++            allowRelaxedForwardPlayback ?
++            std::max(skipFrameStep * 2.0, thread.state.speed) :
++            1.0;
++        switch (playbackValue)
++        {
++        case Playback::Forward:
++            // Forward playback must never borrow a future frame, otherwise the
++            // image can flicker back and forth around the transport time when
++            // adjacent cache entries complete out of order.
++            if (prev != end && frameDiff(prev->first) <= maxAdjacentFrameDiff)
++            {
++                out = prev->second;
++                return true;
++            }
++            break;
++        case Playback::Reverse:
++            // Reverse playback mirrors the forward rule: only borrow the frame
++            // on the reverse-playback side of the transport to keep motion
++            // monotonic instead of bouncing between two decoded neighbors.
++            if (lower != end && frameDiff(lower->first) <= maxAdjacentFrameDiff)
++            {
++                out = lower->second;
++                return true;
++            }
++            break;
++        case Playback::Stop:
++        default:
++            if (prev != end && lower != end)
++            {
++                const bool usePrev = frameDiff(prev->first) <= frameDiff(lower->first);
++                const auto& candidate = usePrev ? prev : lower;
++                if (frameDiff(candidate->first) <= maxAdjacentFrameDiff)
++                {
++                    out = candidate->second;
++                    return true;
++                }
++            }
++            if (prev != end && frameDiff(prev->first) <= maxAdjacentFrameDiff)
++            {
++                out = prev->second;
++                return true;
++            }
++            if (lower != end && frameDiff(lower->first) <= maxAdjacentFrameDiff)
++            {
++                out = lower->second;
++                return true;
++            }
++            break;
++        }
++        return false;
++    }
++
+     size_t Player::Private::getVideoCacheMax() const
+     {
+         // This function returns the approximate number of video frames
+@@ -171,10 +355,15 @@ namespace tl
+             // Add byte counts from timelines that are being compared.
+             for (size_t i = 0; i < thread.state.compare.size(); ++i)
+             {
++                const auto compare = thread.state.compare[i];
++                if (!compare)
++                {
++                    continue;
++                }
+                 const int compareLayer = i < thread.state.compareVideoLayers.size() ?
+                     thread.state.compareVideoLayers[i] :
+                     thread.state.videoLayer;
+-                const IOInfo& compareInfo = thread.state.compare[i]->getIOInfo();
++                const IOInfo& compareInfo = compare->getIOInfo();
+                 if (compareLayer >= 0 &&
+                     compareLayer < compareInfo.video.size())
+                 {
+@@ -182,7 +371,9 @@ namespace tl
+                 }
+             }
+         }
+-        return (thread.state.cacheOptions.videoGB * ftk::gigabyte) / byteCount;
++        return byteCount > 0 ?
++            (thread.state.cacheOptions.videoGB * ftk::gigabyte) / byteCount :
++            0;
+     }
+
+     size_t Player::Private::getAudioCacheMax() const
+@@ -190,8 +381,10 @@ namespace tl
+         // This function returns the approximate number seconds of audio
+         // that can fit in the cache. Note that this doesn't take into
+         // account clips with different sizes or multiple tracks.
+-        return (thread.state.cacheOptions.audioGB * ftk::gigabyte) /
+-            (ioInfo.audio.sampleRate * ioInfo.audio.getByteCount());
++        const size_t byteCount = ioInfo.audio.sampleRate * ioInfo.audio.getByteCount();
++        return byteCount > 0 ?
++            (thread.state.cacheOptions.audioGB * ftk::gigabyte) / byteCount :
++            0;
+     }
+
+     OTIO_NS::TimeRange Player::Private::getVideoCacheRange(size_t max) const
+@@ -199,8 +392,18 @@ namespace tl
+         OTIO_NS::TimeRange out;
+
+         const double rate = thread.state.currentTime.rate();
++        size_t effectiveMax = max;
++        const bool highMemoryVideo =
++            thread.state.videoLayer >= 0 &&
++            thread.state.videoLayer < ioInfo.video.size() &&
++            ioInfo.video[thread.state.videoLayer].getByteCount() >= 16 * 1024 * 1024;
++        if (highMemoryVideo && CacheDir::Forward == thread.cacheDir)
++        {
++            effectiveMax = std::min<size_t>(effectiveMax, 32);
++        }
++
+         const OTIO_NS::RationalTime readAhead = std::min(
+-            OTIO_NS::RationalTime(max, rate),
++            OTIO_NS::RationalTime(effectiveMax, rate),
+             thread.state.inOutRange.duration());
+         const OTIO_NS::RationalTime readBehind =
+             OTIO_NS::RationalTime(thread.state.cacheOptions.readBehind, 1.0).rescaled_to(rate);
+@@ -217,7 +420,35 @@ namespace tl
+                 (thread.state.currentTime - readAhead).round(),
+                 (thread.state.currentTime + readBehind).round());
+             break;
+-        default: break;
++        default:
++            out = OTIO_NS::TimeRange::range_from_start_end_time_inclusive(
++                (thread.state.currentTime - readBehind).round(),
++                (thread.state.currentTime + readAhead).round());
++            break;
++        }
++
++        if (out != invalidTimeRange)
++        {
++            const OTIO_NS::RationalTime rangeStart =
++                thread.state.inOutRange.start_time().rescaled_to(rate).round();
++            const OTIO_NS::RationalTime rangeEnd =
++                thread.state.inOutRange.end_time_inclusive().rescaled_to(rate).round();
++            const OTIO_NS::RationalTime clampedStart =
++                std::max(out.start_time().rescaled_to(rate), rangeStart);
++            const OTIO_NS::RationalTime clampedEnd =
++                std::min(out.end_time_inclusive().rescaled_to(rate), rangeEnd);
++            if (clampedEnd >= clampedStart)
++            {
++                out = OTIO_NS::TimeRange::range_from_start_end_time_inclusive(
++                    clampedStart,
++                    clampedEnd);
++            }
++            else
++            {
++                out = OTIO_NS::TimeRange::range_from_start_end_time_inclusive(
++                    rangeStart,
++                    rangeStart);
++            }
+         }
+
+         return out;
+@@ -241,7 +472,9 @@ namespace tl
+         case CacheDir::Reverse:
+             out = ftk::Range<int64_t>(c - readAhead, c + readBehind);
+             break;
+-        default: break;
++        default:
++            out = ftk::Range<int64_t>(c - readBehind, c + readAhead);
++            break;
+         }
+
+         return out;
+@@ -250,6 +483,14 @@ namespace tl
+     void Player::Private::cacheUpdate()
+     {
+         //std::cout << "current time: " << currentTime->get() << std::endl;
++        if (timeline && ioInfo.video.empty())
++        {
++            const IOInfo timelineIOInfo = timeline->getIOInfo();
++            if (!timelineIOInfo.video.empty())
++            {
++                ioInfo = timelineIOInfo;
++            }
++        }
+
+         const size_t videoCacheMax = getVideoCacheMax();
+         const size_t audioCacheMax = getAudioCacheMax();
+@@ -321,15 +562,218 @@ namespace tl
+             }
+         }
+
++        // Drop pending requests that are outside the active cache range only
++        // while stopped. During playback, cancelling one stale FFmpegCmd request
++        // tears down the shared pipe and causes visible start/stop stutter.
++        const double playbackSpeedMult =
++            thread.state.currentTime.rate() > 0.0 && thread.state.speed > 0.0 ?
++            std::abs(thread.state.speed / thread.state.currentTime.rate()) :
++            1.0;
++        const bool highMemoryVideoForRequestPolicy =
++            thread.state.videoLayer >= 0 &&
++            thread.state.videoLayer < ioInfo.video.size() &&
++            ioInfo.video[thread.state.videoLayer].getByteCount() >= 16 * 1024 * 1024;
++        const bool preserveFastForwardPipe =
++            highMemoryVideoForRequestPolicy &&
++            playerOptions.videoRequestMax <= 8;
++        const bool skipForwardPlayback =
++            Playback::Forward == thread.state.playback &&
++            playbackSpeedMult > 1.05 &&
++            !preserveFastForwardPipe;
++        const bool fastForwardPlayback =
++            Playback::Forward == thread.state.playback &&
++            playbackSpeedMult > 1.05;
++        const bool cancelStalePendingRequests =
++            Playback::Stop == thread.state.playback ||
++            (fastForwardPlayback && !preserveFastForwardPipe);
++
++        // Drop pending video requests that are outside the active cache
++        // range so the player does not wait on stale futures.
++        {
++            const auto looped = tl::loop(
++                videoCacheRange,
++                thread.state.inOutRange);
++            auto i = thread.videoRequests.begin();
++            while (i != thread.videoRequests.end())
++            {
++                const OTIO_NS::RationalTime& t = i->first;
++                bool found = false;
++                for (const auto& range : looped)
++                {
++                    if (range.contains(t))
++                    {
++                        found = true;
++                        break;
++                    }
++                }
++                if (!found && cancelStalePendingRequests)
++                {
++                    std::map<std::shared_ptr<Timeline>, std::vector<uint64_t>, std::owner_less<std::shared_ptr<Timeline> > > videoIds;
++                    for (const auto& pending : i->second)
++                    {
++                        if (pending.timeline && pending.request.id)
++                        {
++                            videoIds[pending.timeline].push_back(pending.request.id);
++                        }
++                    }
++                    for (const auto& requests : videoIds)
++                    {
++                        requests.first->cancelRequests(requests.second);
++                    }
++                    i = thread.videoRequests.erase(i);
++                }
++                else
++                {
++                    ++i;
++                }
++            }
++        }
++
++        // Drop pending audio requests that are outside the active cache
++        // range for the same reason as stale video requests.
++        {
++            const auto looped = tl::loop(
++                audioCacheRange,
++                ftk::Range<int64_t>(
++                    thread.state.inOutRange.start_time().rescaled_to(1.0).value(),
++                    thread.state.inOutRange.end_time_inclusive().rescaled_to(1.0).value()));
++            auto i = thread.audioRequests.begin();
++            while (i != thread.audioRequests.end())
++            {
++                const int64_t seconds = i->first;
++                bool found = false;
++                for (const auto& range : looped)
++                {
++                    if (seconds >= range.min() && seconds <= range.max())
++                    {
++                        found = true;
++                        break;
++                    }
++                }
++                if (!found && cancelStalePendingRequests)
++                {
++                    if (i->second.id)
++                    {
++                        timeline->cancelRequests({ i->second.id });
++                    }
++                    i = thread.audioRequests.erase(i);
++                }
++                else
++                {
++                    ++i;
++                }
++            }
++        }
++
++        // Reclaim completed requests before filling the queues. This keeps
++        // request slots hot instead of waiting one cache tick to submit more.
++        {
++            const bool highMemoryVideo =
++                thread.state.videoLayer >= 0 &&
++                thread.state.videoLayer < ioInfo.video.size() &&
++                ioInfo.video[thread.state.videoLayer].getByteCount() >= 16 * 1024 * 1024;
++            const size_t maxCompletedVideoPerUpdate =
++                highMemoryVideo ? 4 : std::numeric_limits<size_t>::max();
++            size_t completedVideoCount = 0;
++            auto videoRequestsIt = thread.videoRequests.begin();
++            while (videoRequestsIt != thread.videoRequests.end() &&
++                completedVideoCount < maxCompletedVideoPerUpdate)
++            {
++                bool ready = true;
++                for (auto videoRequestIt = videoRequestsIt->second.begin();
++                    videoRequestIt != videoRequestsIt->second.end();
++                    ++videoRequestIt)
++                {
++                    ready &= videoRequestIt->request.future.valid() &&
++                        videoRequestIt->request.future.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
++                }
++                if (ready)
++                {
++                    const OTIO_NS::RationalTime time = videoRequestsIt->first;
++                    std::vector<VideoFrame> videoFrameList;
++                    for (auto videoRequestIt = videoRequestsIt->second.begin();
++                        videoRequestIt != videoRequestsIt->second.end();
++                        ++videoRequestIt)
++                    {
++                        auto videoFrame = videoRequestIt->request.future.get();
++                        videoFrame.time = time;
++                        videoFrameList.emplace_back(videoFrame);
++                    }
++                    if (isValidVideoFrameList(videoFrameList))
++                    {
++                        thread.videoCache[time] = videoFrameList;
++                        videoCacheChanged = true;
++                    }
++                    ++completedVideoCount;
++                    videoRequestsIt = thread.videoRequests.erase(videoRequestsIt);
++                }
++                else
++                {
++                    ++videoRequestsIt;
++                }
++            }
++        }
++
++        {
++            auto audioRequestsIt = thread.audioRequests.begin();
++            while (audioRequestsIt != thread.audioRequests.end())
++            {
++                const int64_t s = audioRequestsIt->first;
++                if (audioRequestsIt->second.future.valid() &&
++                    audioRequestsIt->second.future.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
++                {
++                    auto audioFrame = audioRequestsIt->second.future.get();
++                    audioFrame.seconds = s;
++                    {
++                        std::unique_lock<std::mutex> lock(audioMutex.mutex);
++                        audioMutex.cache[audioRequestsIt->first] = audioFrame;
++                    }
++                    audioRequestsIt = thread.audioRequests.erase(audioRequestsIt);
++                    audioCacheChanged = true;
++                }
++                else
++                {
++                    ++audioRequestsIt;
++                }
++            }
++        }
++
+         // Fill the video cache.
+         if (!ioInfo.video.empty())
+         {
+-            const OTIO_NS::RationalTime inc(1.0, thread.state.currentTime.rate());
+-            for (OTIO_NS::RationalTime time = videoCacheRange.start_time();
+-                time <= videoCacheRange.end_time_inclusive() &&
+-                thread.videoRequests.size() < playerOptions.videoRequestMax;
+-                time += inc)
++            const double rate = thread.state.currentTime.rate();
++            const int64_t startFrame =
++                videoCacheRange.start_time().rescaled_to(rate).round().value();
++            const int64_t endFrame =
++                videoCacheRange.end_time_inclusive().rescaled_to(rate).round().value();
++            int64_t anchorFrame =
++                thread.state.currentTime.rescaled_to(rate).round().value();
++            anchorFrame = std::max(startFrame, std::min(endFrame, anchorFrame));
++            const OTIO_NS::RationalTime anchorTimeLooped = tl::loop(
++                OTIO_NS::RationalTime(anchorFrame, rate),
++                thread.state.inOutRange);
++            const bool highMemoryVideo =
++                thread.state.videoLayer >= 0 &&
++                thread.state.videoLayer < ioInfo.video.size() &&
++                ioInfo.video[thread.state.videoLayer].getByteCount() >= 16 * 1024 * 1024;
++            const size_t activeVideoRequestMax =
++                highMemoryVideo && CacheDir::Reverse == thread.cacheDir ?
++                playerOptions.videoRequestMax :
++                std::min<size_t>(playerOptions.videoRequestMax, 32);
++
++            auto getVideoRequestCount = [&]()
++            {
++                size_t out = 0;
++                for (const auto& i : thread.videoRequests)
++                {
++                    out += i.second.size();
++                }
++                return out;
++            };
++
++            auto requestVideoFrame = [&](int64_t frame)
+             {
++                const OTIO_NS::RationalTime time(frame, rate);
+                 const OTIO_NS::RationalTime timeLooped = tl::loop(time, thread.state.inOutRange);
+                 const auto j = thread.videoCache.find(timeLooped);
+                 if (j == thread.videoCache.end())
+@@ -337,28 +781,192 @@ namespace tl
+                     const auto k = thread.videoRequests.find(timeLooped);
+                     if (k == thread.videoRequests.end())
+                     {
+-                        //std::cout << this << " video request: " << timeLooped << std::endl;
++                        size_t requestCount = 1;
++                        for (const auto& compare : thread.state.compare)
++                        {
++                            if (compare)
++                            {
++                                ++requestCount;
++                            }
++                        }
++                        const size_t currentRequestCount = getVideoRequestCount();
++                        // Compare playback expands one transport position into
++                        // multiple real decode requests. Limit the total
++                        // in-flight decode work, not just the number of cached
++                        // timestamps, otherwise split sync mode can flood the
++                        // backend with far more video reads than single-video
++                        // playback and starve the current frame.
++                        if (currentRequestCount > 0 &&
++                            currentRequestCount + requestCount > activeVideoRequestMax)
++                        {
++                            return;
++                        }
+                         auto& requests = thread.videoRequests[timeLooped];
+                         IOOptions ioOptions2 = thread.state.ioOptions;
+                         ioOptions2["Layer"] = ftk::Format("{0}").arg(thread.state.videoLayer);
+                         requests.clear();
+-                        requests.push_back(timeline->getVideo(timeLooped, ioOptions2));
++                        requests.push_back(Thread::PendingVideoRequest());
++                        requests.back().timeline = timeline;
++                        requests.back().request = timeline->getVideo(timeLooped, ioOptions2);
+
+                         for (size_t k = 0; k < thread.state.compare.size(); ++k)
+                         {
++                            auto compare = thread.state.compare[k];
++                            if (!compare)
++                            {
++                                continue;
++                            }
+                             const OTIO_NS::RationalTime t2 = tl::getCompareTime(
+                                 timeLooped,
+                                 timeRange,
+-                                thread.state.compare[k]->getTimeRange(),
++                                compare->getTimeRange(),
+                                 thread.state.compareTime);
+                             ioOptions2["Layer"] = ftk::Format("{0}").
+                                 arg(k < thread.state.compareVideoLayers.size() ?
+                                     thread.state.compareVideoLayers[k] :
+                                     thread.state.videoLayer);
+-                            requests.push_back(thread.state.compare[k]->getVideo(t2, ioOptions2));
++                            requests.push_back(Thread::PendingVideoRequest());
++                            requests.back().timeline = compare;
++                            requests.back().request = compare->getVideo(t2, ioOptions2);
+                         }
+                     }
+                 }
++            };
++
++            // Prioritize requests around the current frame so changing
++            // playback direction doesn't stall on distant cache ranges.
++            const bool highMemoryReverse =
++                highMemoryVideo && CacheDir::Reverse == thread.cacheDir;
++            if (!highMemoryReverse)
++            {
++                thread.reverseChunkValid = false;
++            }
++            if (!highMemoryReverse)
++            {
++                requestVideoFrame(anchorFrame);
++            }
++            const bool anchorCached =
++                thread.videoCache.find(anchorTimeLooped) != thread.videoCache.end();
++            const bool prioritizeAnchor =
++                !anchorCached;
++            if (highMemoryVideo)
++            {
++                switch (thread.cacheDir)
++                {
++                case CacheDir::Forward:
++                {
++                    const int64_t frameStep =
++                        skipForwardPlayback ?
++                        std::max<int64_t>(
++                            1,
++                            static_cast<int64_t>(
++                                playbackSpeedMult > 1.05 ?
++                                std::round(playbackSpeedMult * 4.0) :
++                                1.0)) :
++                        1;
++                    const int64_t forwardWindowEnd = std::min<int64_t>(
++                        endFrame,
++                        anchorFrame + static_cast<int64_t>(
++                            std::min<size_t>(32, std::max<size_t>(1, activeVideoRequestMax))) * frameStep);
++                    for (int64_t frame = anchorFrame + frameStep;
++                        frame <= forwardWindowEnd &&
++                        getVideoRequestCount() < activeVideoRequestMax;
++                        frame += frameStep)
++                    {
++                        requestVideoFrame(frame);
++                    }
++                    break;
++                }
++                case CacheDir::Reverse:
++                {
++                    const int64_t chunkSize = static_cast<int64_t>(
++                        std::max<size_t>(1, std::min<size_t>(64, activeVideoRequestMax)));
++                    const int64_t prefetchThreshold =
++                        std::max<int64_t>(1, (chunkSize * 7) / 8);
++                    if (!thread.reverseChunkValid ||
++                        anchorFrame > thread.reverseChunkEnd ||
++                        anchorFrame < thread.reverseChunkStart)
++                    {
++                        thread.reverseChunkEnd = anchorFrame;
++                        thread.reverseChunkStart = std::max<int64_t>(
++                            startFrame,
++                            thread.reverseChunkEnd - chunkSize + 1);
++                        thread.reverseChunkValid = true;
++                    }
++                    else if (anchorFrame <= thread.reverseChunkStart + prefetchThreshold &&
++                        thread.reverseChunkStart > startFrame)
++                    {
++                        thread.reverseChunkEnd = thread.reverseChunkStart - 1;
++                        thread.reverseChunkStart = std::max<int64_t>(
++                            startFrame,
++                            thread.reverseChunkEnd - chunkSize + 1);
++                    }
++
++                    for (int64_t frame = thread.reverseChunkStart;
++                        frame <= thread.reverseChunkEnd &&
++                        frame <= anchorFrame &&
++                        getVideoRequestCount() < activeVideoRequestMax;
++                        ++frame)
++                    {
++                        requestVideoFrame(frame);
++                    }
++                    break;
++                }
++                default:
++                    break;
++                }
++            }
++            else
++            {
++                switch (thread.cacheDir)
++                {
++                case CacheDir::Forward:
++                    for (int64_t frame = anchorFrame + 1;
++                        frame <= endFrame &&
++                        (!prioritizeAnchor || frame <= anchorFrame + 2) &&
++                        getVideoRequestCount() < activeVideoRequestMax;
++                        ++frame)
++                    {
++                        requestVideoFrame(frame);
++                    }
++                    for (int64_t frame = anchorFrame - 1;
++                        frame >= startFrame &&
++                        (!prioritizeAnchor || frame >= anchorFrame - 1) &&
++                        getVideoRequestCount() < activeVideoRequestMax;
++                        --frame)
++                    {
++                        requestVideoFrame(frame);
++                    }
++                    break;
++                case CacheDir::Reverse:
++                    for (int64_t frame = anchorFrame - 1;
++                        frame >= startFrame &&
++                        (!prioritizeAnchor || frame >= anchorFrame - 2) &&
++                        getVideoRequestCount() < activeVideoRequestMax;
++                        --frame)
++                    {
++                        requestVideoFrame(frame);
++                    }
++                    for (int64_t frame = anchorFrame + 1;
++                        frame <= endFrame &&
++                        (!prioritizeAnchor || frame <= anchorFrame + 1) &&
++                        getVideoRequestCount() < activeVideoRequestMax;
++                        ++frame)
++                    {
++                        requestVideoFrame(frame);
++                    }
++                    break;
++                default:
++                    for (int64_t frame = startFrame;
++                        frame <= endFrame &&
++                        (!prioritizeAnchor || frame <= anchorFrame + 1) &&
++                        getVideoRequestCount() < activeVideoRequestMax;
++                        ++frame)
++                    {
++                        requestVideoFrame(frame);
++                    }
++                    break;
++                }
+             }
+             //std::cout << this << " video requests: " << thread.videoRequests.size() << std::endl;
+         }
+@@ -366,12 +974,20 @@ namespace tl
+         // Fill the audio cache.
+         if (ioInfo.audio.isValid())
+         {
+-            for (int64_t seconds = audioCacheRange.min();
+-                seconds <= audioCacheRange.max() &&
+-                thread.audioRequests.size() < playerOptions.audioRequestMax;
+-                ++seconds)
++            const int64_t minSecond = audioCacheRange.min();
++            const int64_t maxSecond = audioCacheRange.max();
++            int64_t anchorSecond = thread.state.currentTime.rescaled_to(1.0).value();
++            anchorSecond = std::max(minSecond, std::min(maxSecond, anchorSecond));
++
++            auto requestAudioSecond = [&](int64_t seconds)
+             {
+-                const int64_t secondsLooped = tl::loop(seconds + thread.state.audioOffset, thread.state.inOutRange);
++                if (thread.audioRequests.size() >= playerOptions.audioRequestMax)
++                {
++                    return;
++                }
++
++                const int64_t secondsLooped =
++                    tl::loop(seconds + thread.state.audioOffset, thread.state.inOutRange);
+                 bool found = false;
+                 {
+                     std::unique_lock<std::mutex> lock(audioMutex.mutex);
+@@ -387,6 +1003,52 @@ namespace tl
+                         request = timeline->getAudio(secondsLooped, thread.state.ioOptions);
+                     }
+                 }
++            };
++
++            requestAudioSecond(anchorSecond);
++            switch (thread.cacheDir)
++            {
++            case CacheDir::Forward:
++                for (int64_t seconds = anchorSecond + 1;
++                    seconds <= maxSecond &&
++                    thread.audioRequests.size() < playerOptions.audioRequestMax;
++                    ++seconds)
++                {
++                    requestAudioSecond(seconds);
++                }
++                for (int64_t seconds = anchorSecond - 1;
++                    seconds >= minSecond &&
++                    thread.audioRequests.size() < playerOptions.audioRequestMax;
++                    --seconds)
++                {
++                    requestAudioSecond(seconds);
++                }
++                break;
++            case CacheDir::Reverse:
++                for (int64_t seconds = anchorSecond - 1;
++                    seconds >= minSecond &&
++                    thread.audioRequests.size() < playerOptions.audioRequestMax;
++                    --seconds)
++                {
++                    requestAudioSecond(seconds);
++                }
++                for (int64_t seconds = anchorSecond + 1;
++                    seconds <= maxSecond &&
++                    thread.audioRequests.size() < playerOptions.audioRequestMax;
++                    ++seconds)
++                {
++                    requestAudioSecond(seconds);
++                }
++                break;
++            default:
++                for (int64_t seconds = minSecond;
++                    seconds <= maxSecond &&
++                    thread.audioRequests.size() < playerOptions.audioRequestMax;
++                    ++seconds)
++                {
++                    requestAudioSecond(seconds);
++                }
++                break;
+             }
+             //std::cout << this << " audio requests: " << thread.audioRequests.size() << std::endl;
+         }
+@@ -400,8 +1062,8 @@ namespace tl
+                 videoRequestIt != videoRequestsIt->second.end();
+                 ++videoRequestIt)
+             {
+-                ready &= videoRequestIt->future.valid() &&
+-                    videoRequestIt->future.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
++                ready &= videoRequestIt->request.future.valid() &&
++                    videoRequestIt->request.future.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+             }
+             if (ready)
+             {
+@@ -411,12 +1073,15 @@ namespace tl
+                     videoRequestIt != videoRequestsIt->second.end();
+                     ++videoRequestIt)
+                 {
+-                    auto videoFrame = videoRequestIt->future.get();
++                    auto videoFrame = videoRequestIt->request.future.get();
+                     videoFrame.time = time;
+                     videoFrameList.emplace_back(videoFrame);
+                 }
+-                thread.videoCache[time] = videoFrameList;
+-                videoCacheChanged = true;
++                if (isValidVideoFrameList(videoFrameList))
++                {
++                    thread.videoCache[time] = videoFrameList;
++                    videoCacheChanged = true;
++                }
+                 videoRequestsIt = thread.videoRequests.erase(videoRequestsIt);
+             }
+             else
+@@ -626,6 +1291,7 @@ namespace tl
+             videoLayer == other.videoLayer &&
+             compareVideoLayers == other.compareVideoLayers &&
+             audioOffset == other.audioOffset &&
++            speed == other.speed &&
+             cacheOptions == other.cacheOptions;
+     }
+
+diff --git a/lib/tlRender/Timeline/PlayerPrivate.h b/lib/tlRender/Timeline/PlayerPrivate.h
+index c90aabb6..286fa8cf 100644
+--- a/lib/tlRender/Timeline/PlayerPrivate.h
++++ b/lib/tlRender/Timeline/PlayerPrivate.h
+@@ -35,6 +35,12 @@ namespace tl
+         void cacheUpdate();
+
+         bool hasAudio() const;
++        bool useAudioClock(Playback) const;
++        bool findCurrentVideoFrame(
++            const OTIO_NS::RationalTime&,
++            Playback,
++            const OTIO_NS::RationalTime&,
++            std::vector<VideoFrame>&) const;
+         void playbackReset(const OTIO_NS::RationalTime&);
+         void audioInit(const std::shared_ptr<ftk::Context>&);
+         void audioReset(const OTIO_NS::RationalTime&);
+@@ -104,6 +110,7 @@ namespace tl
+             int videoLayer = 0;
+             std::vector<int> compareVideoLayers;
+             double audioOffset = 0.0;
++            double speed = 0.0;
+             PlayerCacheOptions cacheOptions;
+
+             bool operator == (const PlaybackState&) const;
+@@ -125,11 +132,20 @@ namespace tl
+
+         struct Thread
+         {
++            struct PendingVideoRequest
++            {
++                std::shared_ptr<Timeline> timeline;
++                VideoRequest request;
++            };
++
+             PlaybackState state;
+             CacheDir cacheDir = CacheDir::Forward;
+-            std::map<OTIO_NS::RationalTime, std::vector<VideoRequest> > videoRequests;
++            std::map<OTIO_NS::RationalTime, std::vector<PendingVideoRequest> > videoRequests;
+             std::map<OTIO_NS::RationalTime, std::vector<VideoFrame> > videoCache;
+             std::map<int64_t, AudioRequest> audioRequests;
++            bool reverseChunkValid = false;
++            int64_t reverseChunkStart = 0;
++            int64_t reverseChunkEnd = 0;
+             std::chrono::steady_clock::time_point cacheTimer;
+             std::chrono::steady_clock::time_point logTimer;
+             std::thread thread;
+diff --git a/lib/tlRender/Timeline/Timeline.cpp b/lib/tlRender/Timeline/Timeline.cpp
+index 12bb05da..3ab1f945 100644
+--- a/lib/tlRender/Timeline/Timeline.cpp
++++ b/lib/tlRender/Timeline/Timeline.cpp
+@@ -298,37 +298,20 @@ namespace tl
+     void Timeline::cancelRequests(const std::vector<uint64_t>& ids)
+     {
+         FTK_P();
+-        std::unique_lock<std::mutex> lock(p.mutex.mutex);
+-        {
+-            auto i = p.mutex.videoRequests.begin();
+-            while (i != p.mutex.videoRequests.end())
+-            {
+-                const auto j = std::find(ids.begin(), ids.end(), (*i)->id);
+-                if (j != ids.end())
+-                {
+-                    i = p.mutex.videoRequests.erase(i);
+-                }
+-                else
+-                {
+-                    ++i;
+-                }
+-            }
+-        }
++        if (ids.empty())
+         {
+-            auto i = p.mutex.audioRequests.begin();
+-            while (i != p.mutex.audioRequests.end())
+-            {
+-                const auto j = std::find(ids.begin(), ids.end(), (*i)->id);
+-                if (j != ids.end())
+-                {
+-                    i = p.mutex.audioRequests.erase(i);
+-                }
+-                else
+-                {
+-                    ++i;
+-                }
+-            }
++            return;
+         }
++        std::unique_lock<std::mutex> lock(p.mutex.mutex);
++        p.mutex.videoCancelIds.insert(
++            p.mutex.videoCancelIds.end(),
++            ids.begin(),
++            ids.end());
++        p.mutex.audioCancelIds.insert(
++            p.mutex.audioCancelIds.end(),
++            ids.begin(),
++            ids.end());
++        p.thread.cv.notify_one();
+     }
+
+     size_t Timeline::getObjectCount()
+diff --git a/lib/tlRender/Timeline/TimelineOptions.h b/lib/tlRender/Timeline/TimelineOptions.h
+index 11be1749..98528717 100644
+--- a/lib/tlRender/Timeline/TimelineOptions.h
++++ b/lib/tlRender/Timeline/TimelineOptions.h
+@@ -38,10 +38,10 @@ namespace tl
+         bool compat = true;
+
+         //! Maximum number of video requests.
+-        size_t videoRequestMax = 16;
++        size_t videoRequestMax = 64;
+
+         //! Maximum number of audio requests.
+-        size_t audioRequestMax = 16;
++        size_t audioRequestMax = 32;
+
+         //! Request timeout.
+         std::chrono::milliseconds requestTimeout = std::chrono::milliseconds(5);
+diff --git a/lib/tlRender/Timeline/TimelinePrivate.cpp b/lib/tlRender/Timeline/TimelinePrivate.cpp
+index d0c0ba84..8b006374 100644
+--- a/lib/tlRender/Timeline/TimelinePrivate.cpp
++++ b/lib/tlRender/Timeline/TimelinePrivate.cpp
+@@ -132,6 +132,186 @@ namespace tl
+
+     void Timeline::Private::requests()
+     {
++        std::vector<uint64_t> videoCancelIds;
++        std::vector<uint64_t> audioCancelIds;
++        {
++            std::unique_lock<std::mutex> lock(mutex.mutex);
++            videoCancelIds = std::move(mutex.videoCancelIds);
++            audioCancelIds = std::move(mutex.audioCancelIds);
++            mutex.videoCancelIds.clear();
++            mutex.audioCancelIds.clear();
++
++            auto videoRequestIt = mutex.videoRequests.begin();
++            while (videoRequestIt != mutex.videoRequests.end())
++            {
++                if (std::find(videoCancelIds.begin(), videoCancelIds.end(), (*videoRequestIt)->id) != videoCancelIds.end())
++                {
++                    VideoFrame frame;
++                    frame.time = (*videoRequestIt)->time;
++                    (*videoRequestIt)->promise.set_value(frame);
++                    videoRequestIt = mutex.videoRequests.erase(videoRequestIt);
++                }
++                else
++                {
++                    ++videoRequestIt;
++                }
++            }
++
++            auto audioRequestIt = mutex.audioRequests.begin();
++            while (audioRequestIt != mutex.audioRequests.end())
++            {
++                if (std::find(audioCancelIds.begin(), audioCancelIds.end(), (*audioRequestIt)->id) != audioCancelIds.end())
++                {
++                    AudioFrame frame;
++                    frame.seconds = (*audioRequestIt)->seconds;
++                    (*audioRequestIt)->promise.set_value(frame);
++                    audioRequestIt = mutex.audioRequests.erase(audioRequestIt);
++                }
++                else
++                {
++                    ++audioRequestIt;
++                }
++            }
++        }
++        if (!videoCancelIds.empty() || !audioCancelIds.empty())
++        {
++            for (const auto& read : readCache.getValues())
++            {
++                if (read)
++                {
++                    read->cancelRequests();
++                }
++            }
++        }
++        if (!videoCancelIds.empty())
++        {
++            auto videoRequestIt = thread.videoRequestsInProgress.begin();
++            while (videoRequestIt != thread.videoRequestsInProgress.end())
++            {
++                if (std::find(videoCancelIds.begin(), videoCancelIds.end(), (*videoRequestIt)->id) != videoCancelIds.end())
++                {
++                    VideoFrame frame;
++                    frame.time = (*videoRequestIt)->time;
++                    (*videoRequestIt)->promise.set_value(frame);
++                    videoRequestIt = thread.videoRequestsInProgress.erase(videoRequestIt);
++                }
++                else
++                {
++                    ++videoRequestIt;
++                }
++            }
++        }
++        if (!audioCancelIds.empty())
++        {
++            auto audioRequestIt = thread.audioRequestsInProgress.begin();
++            while (audioRequestIt != thread.audioRequestsInProgress.end())
++            {
++                if (std::find(audioCancelIds.begin(), audioCancelIds.end(), (*audioRequestIt)->id) != audioCancelIds.end())
++                {
++                    AudioFrame frame;
++                    frame.seconds = (*audioRequestIt)->seconds;
++                    (*audioRequestIt)->promise.set_value(frame);
++                    audioRequestIt = thread.audioRequestsInProgress.erase(audioRequestIt);
++                }
++                else
++                {
++                    ++audioRequestIt;
++                }
++            }
++        }
++
++        // Reclaim completed requests before admitting new work so the
++        // in-progress limit does not throttle already-finished futures.
++        {
++            auto videoRequestIt = thread.videoRequestsInProgress.begin();
++            while (videoRequestIt != thread.videoRequestsInProgress.end())
++            {
++                bool valid = true;
++                for (auto& i : (*videoRequestIt)->layerData)
++                {
++                    if (i.image.valid())
++                    {
++                        valid &= i.image.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
++                    }
++                    if (i.imageB.valid())
++                    {
++                        valid &= i.imageB.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
++                    }
++                }
++                if (valid)
++                {
++                    VideoFrame frame;
++                    if (!ioInfo.video.empty())
++                    {
++                        frame.size = ioInfo.video.front().size;
++                    }
++                    frame.time = (*videoRequestIt)->time;
++                    for (auto& j : (*videoRequestIt)->layerData)
++                    {
++                        VideoLayer layer;
++                        if (j.image.valid())
++                        {
++                            layer.image = j.image.get().image;
++                        }
++                        if (j.imageB.valid())
++                        {
++                            layer.imageB = j.imageB.get().image;
++                        }
++                        layer.transition = j.transition;
++                        layer.transitionValue = j.transitionValue;
++                        frame.layers.push_back(layer);
++                    }
++                    (*videoRequestIt)->promise.set_value(frame);
++                    videoRequestIt = thread.videoRequestsInProgress.erase(videoRequestIt);
++                    continue;
++                }
++                ++videoRequestIt;
++            }
++        }
++
++        {
++            auto audioRequestIt = thread.audioRequestsInProgress.begin();
++            while (audioRequestIt != thread.audioRequestsInProgress.end())
++            {
++                bool valid = true;
++                for (auto& i : (*audioRequestIt)->layerData)
++                {
++                    if (i.audio.valid())
++                    {
++                        valid &= i.audio.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
++                    }
++                }
++                if (valid)
++                {
++                    AudioFrame frame;
++                    frame.seconds = (*audioRequestIt)->seconds;
++                    for (auto& j : (*audioRequestIt)->layerData)
++                    {
++                        AudioLayer layer;
++                        if (j.audio.valid())
++                        {
++                            const auto audioData = j.audio.get();
++                            if (audioData.audio)
++                            {
++                                layer.audio = padAudioToOneSecond(audioData.audio, j.seconds, j.timeRange);
++                            }
++                        }
++                        frame.layers.push_back(layer);
++                    }
++                    if (frame.layers.empty())
++                    {
++                        auto audio = Audio::create(ioInfo.audio, ioInfo.audio.sampleRate);
++                        audio->zero();
++                        frame.layers.push_back({ audio });
++                    }
++                    (*audioRequestIt)->promise.set_value(frame);
++                    audioRequestIt = thread.audioRequestsInProgress.erase(audioRequestIt);
++                    continue;
++                }
++                ++audioRequestIt;
++            }
++        }
++
+         // Gather requests.
+         std::list<std::shared_ptr<VideoRequest> > newVideoRequests;
+         std::list<std::shared_ptr<AudioRequest> > newAudioRequests;
+@@ -144,8 +324,10 @@ namespace tl
+                 {
+                     return
+                         !mutex.videoRequests.empty() ||
++                        !mutex.videoCancelIds.empty() ||
+                         !thread.videoRequestsInProgress.empty() ||
+                         !mutex.audioRequests.empty() ||
++                        !mutex.audioCancelIds.empty() ||
+                         !thread.audioRequestsInProgress.empty();
+                 });
+             while (!mutex.videoRequests.empty() &&
+diff --git a/lib/tlRender/Timeline/TimelinePrivate.h b/lib/tlRender/Timeline/TimelinePrivate.h
+index 619cd9dc..98d99f86 100644
+--- a/lib/tlRender/Timeline/TimelinePrivate.h
++++ b/lib/tlRender/Timeline/TimelinePrivate.h
+@@ -106,6 +106,8 @@ namespace tl
+         {
+             std::list<std::shared_ptr<VideoRequest> > videoRequests;
+             std::list<std::shared_ptr<AudioRequest> > audioRequests;
++            std::vector<uint64_t> videoCancelIds;
++            std::vector<uint64_t> audioCancelIds;
+             bool stopped = false;
+             std::mutex mutex;
+         };
+diff --git a/lib/tlRender/Timeline/Util.cpp b/lib/tlRender/Timeline/Util.cpp
+index 477f8399..c73a2b1d 100644
+--- a/lib/tlRender/Timeline/Util.cpp
++++ b/lib/tlRender/Timeline/Util.cpp
+@@ -300,10 +300,22 @@ namespace tl
+         const std::string& directory,
+         const ftk::PathOptions& pathOptions)
+     {
+-        ftk::Path out(decodeURL(url), pathOptions);
+-        if (!out.hasProtocol() && !out.isAbs())
++        const std::string decodedURL = decodeURL(url);
++        ftk::Path out(decodedURL, pathOptions);
++        const bool inputIsRelative =
++            getURLScheme(decodedURL).empty() &&
++            (decodedURL.empty() || decodedURL[0] != '/');
++        if (inputIsRelative)
+         {
+-            out.setDir(ftk::appendSeparator(directory) + out.getDir());
++            const std::string mediaDir = "/" == out.getDir() ? std::string() : out.getDir();
++            if (directory.empty() || "/" == directory)
++            {
++                out.setDir(mediaDir);
++            }
++            else
++            {
++                out.setDir(ftk::appendSeparator(directory) + mediaDir);
++            }
+         }
+         return out;
+     }
+diff --git a/lib/tlRender/UI/ThumbnailSystem.cpp b/lib/tlRender/UI/ThumbnailSystem.cpp
+index 47c5907b..3b0ceda4 100644
+--- a/lib/tlRender/UI/ThumbnailSystem.cpp
++++ b/lib/tlRender/UI/ThumbnailSystem.cpp
+@@ -40,7 +40,12 @@ namespace tl
+
          namespace
          {
 -            const size_t ioCacheMax   = 2;
@@ -65,9 +2431,9 @@ diff -ruN a/lib/tlRender/UI/ThumbnailSystem.cpp b/lib/tlRender/UI/ThumbnailSyste
 +
 +            const size_t ioCacheMax   = 4;
              const size_t infoCacheMax = 1000;
- 
+
              std::string getInfoKey(
-@@ -140,6 +145,8 @@
+@@ -140,6 +145,8 @@ namespace tl
                  ftk::LRUCache<std::string, std::shared_ptr<ftk::Image> > cache;
                  bool stopped = false;
                  std::mutex mutex;
@@ -75,41 +2441,41 @@ diff -ruN a/lib/tlRender/UI/ThumbnailSystem.cpp b/lib/tlRender/UI/ThumbnailSyste
 +                std::string lastPath;
              };
              ThumbnailMutex thumbnailMutex;
- 
-@@ -170,6 +177,8 @@
+
+@@ -170,6 +177,8 @@ namespace tl
                  std::atomic<bool> running;
              };
              ThumbnailThread thumbnailThread;
 +            ThumbnailThread thumbnailThread2;
 +            std::shared_ptr<ftk::gl::Window> window2;
- 
+
              struct WaveformThread
              {
-@@ -180,6 +189,7 @@
+@@ -180,6 +189,7 @@ namespace tl
              };
              WaveformThread waveformThread;
- 
+
 +            std::atomic<bool> requestsEnabled = true;
              std::shared_ptr<ftk::Timer> logTimer;
          };
- 
-@@ -229,18 +239,40 @@
+
+@@ -229,18 +239,40 @@ namespace tl
                      }
                      if (p.thumbnailThread.render)
                      {
 -                        _thumbnailRun();
-+                        _thumbnailRunWorker(0);
-                     }
+-                    }
 -                    {
 -                        std::unique_lock<std::mutex> lock(p.thumbnailMutex.mutex);
 -                        p.thumbnailMutex.stopped = true;
--                    }
++                        _thumbnailRunWorker(0);
+                     }
                      p.thumbnailThread.buffer.reset();
                      p.thumbnailThread.render.reset();
 -                    _thumbnailCancel();
                      p.window->clearCurrent();
                  });
- 
+
 +            p.window2 = ftk::gl::Window::create(
 +                context,
 +                "tl::ui::ThumbnailSystem2",
@@ -140,7 +2506,7 @@ diff -ruN a/lib/tlRender/UI/ThumbnailSystem.cpp b/lib/tlRender/UI/ThumbnailSyste
              p.waveformMutex.cache.setMax(p.cacheOptions->get().waveformMB * ftk::megabyte);
              p.waveformThread.ioCache.setMax(ioCacheMax);
              p.waveformThread.running = true;
-@@ -304,7 +336,14 @@
+@@ -304,7 +336,14 @@ namespace tl
              FTK_P();
              p.infoThread.running = false;
              p.thumbnailThread.running = false;
@@ -155,7 +2521,7 @@ diff -ruN a/lib/tlRender/UI/ThumbnailSystem.cpp b/lib/tlRender/UI/ThumbnailSyste
              if (p.infoThread.thread.joinable())
              {
                  p.infoThread.thread.join();
-@@ -313,6 +352,10 @@
+@@ -313,6 +352,10 @@ namespace tl
              {
                  p.thumbnailThread.thread.join();
              }
@@ -166,7 +2532,7 @@ diff -ruN a/lib/tlRender/UI/ThumbnailSystem.cpp b/lib/tlRender/UI/ThumbnailSyste
              if (p.waveformThread.thread.joinable())
              {
                  p.waveformThread.thread.join();
-@@ -359,7 +402,9 @@
+@@ -359,7 +402,9 @@ namespace tl
                  std::unique_lock<std::mutex> lock(p.infoMutex.mutex);
                  if (p.infoMutex.cache.get(key, info))
                      ;
@@ -177,7 +2543,7 @@ diff -ruN a/lib/tlRender/UI/ThumbnailSystem.cpp b/lib/tlRender/UI/ThumbnailSyste
                  {
                      notify = true;
                      p.infoMutex.requests.push_back(request);
-@@ -418,15 +463,36 @@
+@@ -418,15 +463,36 @@ namespace tl
                  std::unique_lock<std::mutex> lock(p.thumbnailMutex.mutex);
                  if (p.thumbnailMutex.cache.get(key, thumbnail))
                      ;
@@ -205,11 +2571,11 @@ diff -ruN a/lib/tlRender/UI/ThumbnailSystem.cpp b/lib/tlRender/UI/ThumbnailSyste
 +                    {
 +                        request->promise.set_value(nullptr);
 +                    }
-                 }
++                }
 +                else
 +                {
 +                    request->promise.set_value(nullptr);
-+                }
+                 }
              }
              if (notify)
              {
@@ -218,7 +2584,7 @@ diff -ruN a/lib/tlRender/UI/ThumbnailSystem.cpp b/lib/tlRender/UI/ThumbnailSyste
              }
              else
              {
-@@ -479,7 +545,7 @@
+@@ -479,7 +545,7 @@ namespace tl
                  std::unique_lock<std::mutex> lock(p.waveformMutex.mutex);
                  if (p.waveformMutex.cache.get(key, mesh))
                      ;
@@ -227,10 +2593,10 @@ diff -ruN a/lib/tlRender/UI/ThumbnailSystem.cpp b/lib/tlRender/UI/ThumbnailSyste
                  {
                      notify = true;
                      p.waveformMutex.requests.push_back(request);
-@@ -555,6 +621,39 @@
+@@ -555,6 +621,39 @@ namespace tl
              }
          }
- 
+
 +        void ThumbnailSystem::setRequestsEnabled(bool value)
 +        {
 +            FTK_P();
@@ -267,15 +2633,16 @@ diff -ruN a/lib/tlRender/UI/ThumbnailSystem.cpp b/lib/tlRender/UI/ThumbnailSyste
          const ThumbnailCacheOptions& ThumbnailSystem::getCacheOptions() const
          {
              return _p->cacheOptions->get();
-@@ -649,14 +748,23 @@
- 
+@@ -648,15 +747,24 @@ namespace tl
+         }
+
          void ThumbnailSystem::_thumbnailRun()
-         {
++        {
 +            _thumbnailRunWorker(0);
 +        }
 +
 +        void ThumbnailSystem::_thumbnailRunWorker(int threadIndex)
-+        {
+         {
              FTK_P();
 +            Private::ThumbnailThread& worker =
 +                0 == threadIndex ?
@@ -293,7 +2660,7 @@ diff -ruN a/lib/tlRender/UI/ThumbnailSystem.cpp b/lib/tlRender/UI/ThumbnailSyste
                          lock,
                          std::chrono::milliseconds(5),
                          [this]
-@@ -664,15 +772,31 @@
+@@ -664,15 +772,31 @@ namespace tl
                              return !_p->thumbnailMutex.requests.empty();
                          }))
                      {
@@ -327,8 +2694,8 @@ diff -ruN a/lib/tlRender/UI/ThumbnailSystem.cpp b/lib/tlRender/UI/ThumbnailSyste
 +                        worker.ioCache.clear();
                          ioOptions = request->options;
                      }
- 
-@@ -680,18 +804,16 @@
+
+@@ -680,18 +804,16 @@ namespace tl
                      try
                      {
                          const std::string& fileName = request->path.get();
@@ -349,7 +2716,7 @@ diff -ruN a/lib/tlRender/UI/ThumbnailSystem.cpp b/lib/tlRender/UI/ThumbnailSyste
                          }
                          if (read)
                          {
-@@ -704,11 +826,11 @@
+@@ -704,11 +826,11 @@ namespace tl
                              }
                              ftk::gl::OffscreenBufferOptions options;
                              if (ftk::gl::doCreate(
@@ -363,7 +2730,7 @@ diff -ruN a/lib/tlRender/UI/ThumbnailSystem.cpp b/lib/tlRender/UI/ThumbnailSyste
                                      size,
                                      ftk::gl::TextureType::RGBA_U8);
                              }
-@@ -717,21 +839,21 @@
+@@ -717,21 +839,21 @@ namespace tl
                                  request->time :
                                  info.videoTime.start_time();
                              const auto videoData = read->readVideo(time, request->options).get();
@@ -392,7 +2759,7 @@ diff -ruN a/lib/tlRender/UI/ThumbnailSystem.cpp b/lib/tlRender/UI/ThumbnailSyste
                                  image = ftk::Image::create(
                                      ftk::ImageInfo(size.w, size.h, ftk::ImageType::RGBA_U8));
                                  glPixelStorei(GL_PACK_ALIGNMENT, 1);
-@@ -773,22 +895,22 @@
+@@ -773,22 +895,22 @@ namespace tl
                              if (size.isValid())
                              {
                                  if (ftk::gl::doCreate(
@@ -422,32 +2789,64 @@ diff -ruN a/lib/tlRender/UI/ThumbnailSystem.cpp b/lib/tlRender/UI/ThumbnailSyste
                                      ftk::ImageInfo info(size.w,
                                          size.h,
                                          ftk::ImageType::RGBA_U8);
-diff -ruN a/lib/tlRender/UI/ThumbnailSystem.h b/lib/tlRender/UI/ThumbnailSystem.h
---- a/lib/tlRender/UI/ThumbnailSystem.h	2026-05-21 13:50:01
-+++ b/lib/tlRender/UI/ThumbnailSystem.h	2026-05-21 13:50:04
-@@ -113,6 +113,10 @@
+diff --git a/lib/tlRender/UI/ThumbnailSystem.h b/lib/tlRender/UI/ThumbnailSystem.h
+index 0aba63f8..e133fd6f 100644
+--- a/lib/tlRender/UI/ThumbnailSystem.h
++++ b/lib/tlRender/UI/ThumbnailSystem.h
+@@ -113,6 +113,10 @@ namespace tl
              //! Cancel pending requests.
              TL_API void cancelRequests(const std::vector<uint64_t>&);
- 
+
 +            //! Enable or disable thumbnail and waveform decode requests.
 +            TL_API void setRequestsEnabled(bool);
 +            TL_API bool areRequestsEnabled() const;
 +
              //! Get the cache options.
              TL_API const ThumbnailCacheOptions& getCacheOptions() const;
- 
-@@ -134,6 +138,7 @@
+
+@@ -134,6 +138,7 @@ namespace tl
              void _infoCancel();
              void _thumbnailCancel();
              void _waveformCancel();
 +            void _thumbnailRunWorker(int threadIndex);
- 
+
              FTK_PRIVATE();
          };
-diff -ruN a/lib/tlRender/UI/TimelineItem.cpp b/lib/tlRender/UI/TimelineItem.cpp
---- a/lib/tlRender/UI/TimelineItem.cpp	2026-05-21 13:50:03
-+++ b/lib/tlRender/UI/TimelineItem.cpp	2026-05-21 13:50:04
-@@ -497,7 +497,14 @@
+diff --git a/lib/tlRender/UI/TimelineItem.cpp b/lib/tlRender/UI/TimelineItem.cpp
+index b66e7112..ab5225fa 100644
+--- a/lib/tlRender/UI/TimelineItem.cpp
++++ b/lib/tlRender/UI/TimelineItem.cpp
+@@ -163,7 +163,28 @@ namespace tl
+                 p.player->observeCurrentTime(),
+                 [this](const OTIO_NS::RationalTime& value)
+                 {
+-                    _p->currentTime = value;
++                    if (_p->player &&
++                        _p->player->isStopped() &&
++                        _p->player->getCurrentVideo().empty())
++                    {
++                        _p->currentTime = value;
++                        setDrawUpdate();
++                    }
++                });
++
++            p.currentVideoObserver = ftk::ListObserver<VideoFrame>::create(
++                p.player->observeCurrentVideo(),
++                [this](const std::vector<VideoFrame>& value)
++                {
++                    if (!value.empty() &&
++                        !value.front().time.strictly_equal(invalidTime))
++                    {
++                        _p->currentTime = value.front().time;
++                    }
++                    else if (_p->player && _p->player->isStopped())
++                    {
++                        _p->currentTime = _p->player->getCurrentTime();
++                    }
+                     setDrawUpdate();
+                 });
+
+@@ -497,7 +518,14 @@ namespace tl
              bool out = true;
              if (_displayOptions.minimize)
              {
@@ -463,10 +2862,241 @@ diff -ruN a/lib/tlRender/UI/TimelineItem.cpp b/lib/tlRender/UI/TimelineItem.cpp
              }
              return out;
          }
-diff -ruN a/lib/tlRender/UI/VideoClipItem.cpp b/lib/tlRender/UI/VideoClipItem.cpp
---- a/lib/tlRender/UI/VideoClipItem.cpp	2026-05-21 13:50:02
-+++ b/lib/tlRender/UI/VideoClipItem.cpp	2026-05-21 13:50:04
-@@ -15,6 +15,45 @@
+@@ -511,6 +539,43 @@ namespace tl
+             return labelMaxSize;
+         }
+
++        bool TimelineItem::_getCurrentTimeLabel(
++            const std::shared_ptr<ftk::FontSystem>& fontSystem,
++            std::string& outLabel,
++            ftk::Box2I& outRect) const
++        {
++            FTK_P();
++            if (p.currentTime.is_invalid_time())
++            {
++                return false;
++            }
++
++            const ftk::Box2I& g = getGeometry();
++            const ftk::V2I pos(
++                timeToPos(p.currentTime),
++                p.size.scrollArea.min.y +
++                g.min.y);
++
++            outLabel = _data->timeUnitsModel->getLabel(p.currentTime);
++            ftk::V2I labelPos(
++                pos.x + p.size.border * 2 + p.size.margin,
++                pos.y + p.size.margin);
++            const ftk::Size2I labelSize = fontSystem->getSize(outLabel, p.size.fontInfo);
++            const ftk::Box2I g2(p.size.scrollArea.min + g.min, p.size.scrollArea.size());
++            if (labelPos.x + labelSize.w > g2.max.x)
++            {
++                const ftk::V2I labelPos2(
++                    pos.x - p.size.border * 2 - p.size.margin - labelSize.w,
++                    pos.y + p.size.margin);
++                if (labelPos2.x > g2.min.x)
++                {
++                    labelPos = labelPos2;
++                }
++            }
++            outRect = ftk::Box2I(labelPos, labelSize);
++            return true;
++        }
++
+         double TimelineItem::_getSecondsInc(
+             const std::shared_ptr<ftk::FontSystem>& fontSystem)
+         {
+@@ -716,23 +781,38 @@ namespace tl
+                 const double seconds = _getSecondsInc(event.fontSystem);
+                 if (seconds > 0.0)
+                 {
+-                    const ftk::Size2I labelMaxSize = _getLabelMaxSize(event.fontSystem);
++                    std::string currentLabel;
++                    ftk::Box2I currentLabelRect;
++                    const bool hasCurrentLabel =
++                        _getCurrentTimeLabel(event.fontSystem, currentLabel, currentLabelRect);
++                    const ftk::Box2I currentLabelRectPadded(
++                        currentLabelRect.min.x - p.size.margin,
++                        currentLabelRect.min.y,
++                        currentLabelRect.w() + p.size.margin * 2,
++                        currentLabelRect.h());
+                     const double t0 = std::floor(posToTime(drawRect.min.x).rescaled_to(1.0).value() / seconds) * seconds;
+                     const double t1 = std::ceil(posToTime(drawRect.max.x).rescaled_to(1.0).value() / seconds) * seconds;
+                     for (double t = t0; t <= t1; t += seconds)
+                     {
+                         const int x = timeToPos(OTIO_NS::RationalTime(t, 1.0));
+                         const std::string label = _data->timeUnitsModel->getLabel(OTIO_NS::RationalTime(t, 1.0).rescaled_to(rate));
++                        const ftk::Box2I labelRect(
++                            x +
++                            p.size.border +
++                            p.size.margin,
++                            p.size.scrollArea.min.y +
++                            g.min.y +
++                            p.size.margin,
++                            event.fontSystem->getSize(label, p.size.fontInfo).w,
++                            p.size.fontMetrics.lineHeight);
++                        if (hasCurrentLabel && ftk::intersects(labelRect, currentLabelRectPadded))
++                        {
++                            continue;
++                        }
+                         event.render->drawText(
+                             event.fontSystem->getGlyphs(label, p.size.fontInfo),
+                             p.size.fontMetrics,
+-                            ftk::V2I(
+-                                x +
+-                                p.size.border +
+-                                p.size.margin,
+-                                p.size.scrollArea.min.y +
+-                                g.min.y +
+-                                p.size.margin),
++                            labelRect.min,
+                             event.style->getColorRole(ftk::ColorRole::TextDisabled));
+                     }
+                 }
+@@ -829,27 +909,16 @@ namespace tl
+                         g.h()),
+                     event.style->getColorRole(ftk::ColorRole::Red));
+
+-                const std::string label = _data->timeUnitsModel->getLabel(p.currentTime);
+-                ftk::V2I labelPos(
+-                    pos.x + p.size.border * 2 + p.size.margin,
+-                    pos.y + p.size.margin);
+-                const ftk::Size2I labelSize = event.fontSystem->getSize(label, p.size.fontInfo);
+-                const ftk::Box2I g2(p.size.scrollArea.min + g.min, p.size.scrollArea.size());
+-                if (labelPos.x + labelSize.w > g2.max.x)
++                std::string label;
++                ftk::Box2I labelRect;
++                if (_getCurrentTimeLabel(event.fontSystem, label, labelRect))
+                 {
+-                    const ftk::V2I labelPos2(
+-                        pos.x - p.size.border * 2 - p.size.margin - labelSize.w,
+-                        pos.y + p.size.margin);
+-                    if (labelPos2.x > g2.min.x)
+-                    {
+-                        labelPos = labelPos2;
+-                    }
++                    event.render->drawText(
++                        event.fontSystem->getGlyphs(label, p.size.fontInfo),
++                        p.size.fontMetrics,
++                        labelRect.min,
++                        event.style->getColorRole(ftk::ColorRole::Text));
+                 }
+-                event.render->drawText(
+-                    event.fontSystem->getGlyphs(label, p.size.fontInfo),
+-                    p.size.fontMetrics,
+-                    labelPos,
+-                    event.style->getColorRole(ftk::ColorRole::Text));
+             }
+         }
+
+diff --git a/lib/tlRender/UI/TimelineItem.h b/lib/tlRender/UI/TimelineItem.h
+index 0f29c120..626537ba 100644
+--- a/lib/tlRender/UI/TimelineItem.h
++++ b/lib/tlRender/UI/TimelineItem.h
+@@ -98,6 +98,10 @@ namespace tl
+             bool _isTrackVisible(int) const;
+
+             ftk::Size2I _getLabelMaxSize(const std::shared_ptr<ftk::FontSystem>&) const;
++            bool _getCurrentTimeLabel(
++                const std::shared_ptr<ftk::FontSystem>&,
++                std::string&,
++                ftk::Box2I&) const;
+             double _getSecondsInc(const std::shared_ptr<ftk::FontSystem>&);
+
+             void _drawInOutPoints(
+diff --git a/lib/tlRender/UI/TimelineItemPrivate.h b/lib/tlRender/UI/TimelineItemPrivate.h
+index 2b62b526..738a9a2c 100644
+--- a/lib/tlRender/UI/TimelineItemPrivate.h
++++ b/lib/tlRender/UI/TimelineItemPrivate.h
+@@ -60,6 +60,7 @@ namespace tl
+             MouseMode mouseMode = MouseMode::None;
+
+             std::shared_ptr<ftk::Observer<OTIO_NS::RationalTime> > currentTimeObserver;
++            std::shared_ptr<ftk::ListObserver<VideoFrame> > currentVideoObserver;
+             std::shared_ptr<ftk::Observer<OTIO_NS::TimeRange> > inOutRangeObserver;
+             std::shared_ptr<ftk::Observer<PlayerCacheInfo> > cacheInfoObserver;
+         };
+diff --git a/lib/tlRender/UI/TimelineWidget.cpp b/lib/tlRender/UI/TimelineWidget.cpp
+index e0f93b78..d7b470ab 100644
+--- a/lib/tlRender/UI/TimelineWidget.cpp
++++ b/lib/tlRender/UI/TimelineWidget.cpp
+@@ -64,6 +64,7 @@ namespace tl
+
+             std::shared_ptr<ftk::Observer<Playback> > playbackObserver;
+             std::shared_ptr<ftk::Observer<OTIO_NS::RationalTime> > currentTimeObserver;
++            std::shared_ptr<ftk::ListObserver<VideoFrame> > currentVideoObserver;
+             std::shared_ptr<ftk::Observer<bool> > scrubObserver;
+             std::shared_ptr<ftk::Observer<OTIO_NS::RationalTime> > timeScrubObserver;
+         };
+@@ -152,6 +153,7 @@ namespace tl
+             p.playback = Playback::Stop;
+             p.playbackObserver.reset();
+             p.currentTimeObserver.reset();
++            p.currentVideoObserver.reset();
+             p.scrollWidget->setWidget(nullptr);
+             p.timelineItem.reset();
+
+@@ -175,7 +177,28 @@ namespace tl
+                     p.player->observeCurrentTime(),
+                     [this](const OTIO_NS::RationalTime& value)
+                     {
+-                        _p->currentTime = value;
++                        if (_p->playback == Playback::Stop &&
++                            _p->player &&
++                            _p->player->getCurrentVideo().empty())
++                        {
++                            _p->currentTime = value;
++                            _scrollUpdate();
++                        }
++                    });
++
++                p.currentVideoObserver = ftk::ListObserver<VideoFrame>::create(
++                    p.player->observeCurrentVideo(),
++                    [this](const std::vector<VideoFrame>& value)
++                    {
++                        if (!value.empty() &&
++                            !value.front().time.strictly_equal(invalidTime))
++                        {
++                            _p->currentTime = value.front().time;
++                        }
++                        else if (_p->playback == Playback::Stop && _p->player)
++                        {
++                            _p->currentTime = _p->player->getCurrentTime();
++                        }
+                         _scrollUpdate();
+                     });
+             }
+@@ -455,12 +478,12 @@ namespace tl
+         void TimelineWidget::mousePressEvent(ftk::MouseClickEvent& event)
+         {
+             FTK_P();
+-            event.accept = true;
+             p.mouse.press = event.pos;
+             if (p.itemOptions->get().inputEnabled &&
+                 p.scrollBinding.first == event.button &&
+                 checkKeyModifier(p.scrollBinding.second, event.modifiers))
+             {
++                event.accept = true;
+                 p.mouse.mode = Private::MouseMode::Scroll;
+                 p.mouse.scrollPos = p.scrollWidget->getScrollPos();
+             }
+@@ -473,7 +496,10 @@ namespace tl
+         void TimelineWidget::mouseReleaseEvent(ftk::MouseClickEvent& event)
+         {
+             FTK_P();
+-            event.accept = true;
++            if (Private::MouseMode::Scroll == p.mouse.mode)
++            {
++                event.accept = true;
++            }
+             p.mouse.mode = Private::MouseMode::None;
+         }
+
+diff --git a/lib/tlRender/UI/VideoClipItem.cpp b/lib/tlRender/UI/VideoClipItem.cpp
+index 80619c62..994673c9 100644
+--- a/lib/tlRender/UI/VideoClipItem.cpp
++++ b/lib/tlRender/UI/VideoClipItem.cpp
+@@ -15,6 +15,45 @@ namespace tl
  {
      namespace ui
      {
@@ -512,10 +3142,10 @@ diff -ruN a/lib/tlRender/UI/VideoClipItem.cpp b/lib/tlRender/UI/VideoClipItem.cp
          struct VideoClipItem::Private
          {
              std::string clipName;
-@@ -233,19 +272,16 @@
+@@ -233,19 +272,16 @@ namespace tl
              const int m = _getMargin();
              const int lineHeight = _getLineHeight();
- 
+
 -            const ftk::Box2I g2(
 +            const ftk::Box2I strip(
                  g.min.x,
@@ -533,8 +3163,8 @@ diff -ruN a/lib/tlRender/UI/VideoClipItem.cpp b/lib/tlRender/UI/VideoClipItem.cp
 +            render->setClipRect(ftk::intersect(strip, clipRectState.getClipRect()));
              render->setOCIOOptions(_displayOptions.ocio);
              render->setLUTOptions(_displayOptions.lut);
- 
-@@ -256,94 +292,106 @@
+
+@@ -256,94 +292,106 @@ namespace tl
              // Get thumbnail information.
              if (!p.ioInfo.has_value() &&
                  !p.infoRequest.future.valid() &&
@@ -547,7 +3177,7 @@ diff -ruN a/lib/tlRender/UI/VideoClipItem.cpp b/lib/tlRender/UI/VideoClipItem.cp
 -                    p.ioOptions);
 +                    thumbnailIOOptions(p.ioOptions));
              }
- 
+
              std::map<OTIO_NS::RationalTime, std::shared_ptr<ftk::Image> > thumbnails;
 -            const int thumbnailWidth =
 +            const int idealThumbnailWidth =
@@ -590,6 +3220,26 @@ diff -ruN a/lib/tlRender/UI/VideoClipItem.cpp b/lib/tlRender/UI/VideoClipItem.cp
 -                        OTIO_NS::TimeRange trimmedRange = _trimmedRange;
 -                        if (_data->options.compat &&
 -                            _availableRange.start_time() > p.ioInfo->videoTime.start_time())
+-                        {
+-                            //! \bug If the available range is greater than the media time,
+-                            //! assume the media time is wrong (e.g., Picchu) and
+-                            //! compensate for it.
+-                            trimmedRange = OTIO_NS::TimeRange(
+-                                trimmedRange.start_time() - _availableRange.start_time(),
+-                                trimmedRange.duration());
+-                        }
+-                        const OTIO_NS::RationalTime mediaTime = toVideoMediaTime(
+-                            time,
+-                            _timeRange,
+-                            trimmedRange,
+-                            p.ioInfo->videoTime.duration().rate());
+-                        std::shared_ptr<ftk::Image> image;
+-                        const auto i = p.thumbnails.find(mediaTime);
+-                        if (i != p.thumbnails.end())
+-                        {
+-                            image = i->second;
+-                        }
+-                        else if (!p.ioInfo->video.empty())
 +                        continue;
 +                    }
 +                    const OTIO_NS::RationalTime time = OTIO_NS::RationalTime(
@@ -626,26 +3276,6 @@ diff -ruN a/lib/tlRender/UI/VideoClipItem.cpp b/lib/tlRender/UI/VideoClipItem.cp
 +                        if (k == p.thumbnailRequests.end() &&
 +                            p.thumbnailRequests.size() < maxPendingThumbnailRequests)
                          {
--                            //! \bug If the available range is greater than the media time,
--                            //! assume the media time is wrong (e.g., Picchu) and
--                            //! compensate for it.
--                            trimmedRange = OTIO_NS::TimeRange(
--                                trimmedRange.start_time() - _availableRange.start_time(),
--                                trimmedRange.duration());
--                        }
--                        const OTIO_NS::RationalTime mediaTime = toVideoMediaTime(
--                            time,
--                            _timeRange,
--                            trimmedRange,
--                            p.ioInfo->videoTime.duration().rate());
--                        std::shared_ptr<ftk::Image> image;
--                        const auto i = p.thumbnails.find(mediaTime);
--                        if (i != p.thumbnails.end())
--                        {
--                            image = i->second;
--                        }
--                        else if (!p.ioInfo->video.empty())
--                        {
 -                            const auto k = p.thumbnailRequests.find(mediaTime);
 -                            if (k == p.thumbnailRequests.end())
 +                            auto request = p.thumbnailSystem->getThumbnail(
@@ -673,11 +3303,11 @@ diff -ruN a/lib/tlRender/UI/VideoClipItem.cpp b/lib/tlRender/UI/VideoClipItem.cp
 -                                    p.thumbnailRequests[mediaTime] = std::move(request);
 -                                }
 +                                image = request.future.get();
-                             }
++                            }
 +                            else
 +                            {
 +                                p.thumbnailRequests[mediaTime] = std::move(request);
-+                            }
+                             }
                          }
 -                        if (image)
 -                        {
@@ -710,3 +3340,347 @@ diff -ruN a/lib/tlRender/UI/VideoClipItem.cpp b/lib/tlRender/UI/VideoClipItem.cp
                      }
                  }
              }
+diff --git a/lib/tlRender/UI/Viewport.cpp b/lib/tlRender/UI/Viewport.cpp
+index da23eb47..f3d95fd8 100644
+--- a/lib/tlRender/UI/Viewport.cpp
++++ b/lib/tlRender/UI/Viewport.cpp
+@@ -19,6 +19,68 @@ namespace tl
+ {
+     namespace ui
+     {
++        namespace
++        {
++            bool isSplitCompare(Compare compare)
++            {
++                return Compare::Horizontal == compare ||
++                    Compare::Vertical == compare;
++            }
++
++            ftk::Box2I getSplitSlot(
++                Compare compare,
++                size_t index,
++                const ftk::Size2I& viewportSize)
++            {
++                ftk::Box2I out(0, 0, viewportSize.w, viewportSize.h);
++                switch (compare)
++                {
++                case Compare::Horizontal:
++                {
++                    const int w0 = viewportSize.w / 2;
++                    out = index == 0 ?
++                        ftk::Box2I(0, 0, w0, viewportSize.h) :
++                        ftk::Box2I(w0, 0, viewportSize.w - w0, viewportSize.h);
++                    break;
++                }
++                case Compare::Vertical:
++                {
++                    const int h0 = viewportSize.h / 2;
++                    out = index == 0 ?
++                        ftk::Box2I(0, 0, viewportSize.w, h0) :
++                        ftk::Box2I(0, h0, viewportSize.w, viewportSize.h - h0);
++                    break;
++                }
++                default: break;
++                }
++                return out;
++            }
++
++            ftk::Box2I getSplitSlotForPos(
++                Compare compare,
++                const ftk::Size2I& viewportSize,
++                const ftk::V2I& pos)
++            {
++                size_t index = 0;
++                switch (compare)
++                {
++                case Compare::Horizontal:
++                    index = pos.x >= viewportSize.w / 2 ? 1 : 0;
++                    break;
++                case Compare::Vertical:
++                    index = pos.y >= viewportSize.h / 2 ? 1 : 0;
++                    break;
++                default: break;
++                }
++                return getSplitSlot(compare, index, viewportSize);
++            }
++
++            ftk::Size2I getFrameRenderSize(const VideoFrame& frame)
++            {
++                return getRenderSize(Compare::A, std::vector<VideoFrame>({ frame }));
++            }
++        }
++
+         struct Viewport::Private
+         {
+             std::shared_ptr<ftk::Observable<CompareOptions> > compareOptions;
+@@ -151,6 +213,10 @@ namespace tl
+             FTK_P();
+             if (p.compareOptions->setIfChanged(value))
+             {
++                if (p.frameView->get())
++                {
++                    p.framed->setAlways(true);
++                }
+                 p.doRender = true;
+                 setDrawUpdate();
+             }
+@@ -427,8 +493,18 @@ namespace tl
+             const ftk::V2I& viewPos = p.viewPos->get();
+             const double zoomPrev = p.zoom->get();
+             const double zoomClamped = ftk::clamp(zoom, p.zoomRange.min(), p.zoomRange.max());
+-            pos.x = focus.x + (viewPos.x - focus.x) * (zoomClamped / zoomPrev);
+-            pos.y = focus.y + (viewPos.y - focus.y) * (zoomClamped / zoomPrev);
++            ftk::V2I localFocus = focus;
++            const Compare compare = p.compareOptions->get().compare;
++            if (isSplitCompare(compare))
++            {
++                const ftk::Box2I slot = getSplitSlotForPos(
++                    compare,
++                    getGeometry().size(),
++                    focus);
++                localFocus = focus - slot.min;
++            }
++            pos.x = localFocus.x + (viewPos.x - localFocus.x) * (zoomClamped / zoomPrev);
++            pos.y = localFocus.y + (viewPos.y - localFocus.y) * (zoomClamped / zoomPrev);
+             setViewPosAndZoom(pos, zoomClamped);
+         }
+
+@@ -603,7 +679,6 @@ namespace tl
+
+             auto render = std::dynamic_pointer_cast<IRender>(event.render);
+             const ftk::Box2I& g = getGeometry();
+-            render->drawRect(g, ftk::Color4F(0.F, 0.F, 0.F));
+
+             if (p.doRender)
+             {
+@@ -689,6 +764,9 @@ namespace tl
+                     render->setViewport(ftk::Box2I(0, 0, g.w(), g.h()));
+                     render->setClipRectEnabled(false);
+
++                    const bool splitCompare = isSplitCompare(
++                        compareOptions.compare);
++
+                     // Draw the main buffer.
+                     if (p.buffer)
+                     {
+@@ -696,14 +774,68 @@ namespace tl
+                         render->clearViewport(ftk::Color4F(0.F, 0.F, 0.F, 0.F));
+                         render->setOCIOOptions(p.ocioOptions->get());
+                         render->setLUTOptions(p.lutOptions->get());
+-                        render->setTransform(pm * vm);
+-                        render->drawVideo(
+-                            p.videoFrame,
+-                            boxes,
+-                            p.imageOptions->get(),
+-                            p.displayOptions->get(),
+-                            compareOptions,
+-                            p.colorBuffer->get());
++                        if (splitCompare)
++                        {
++                            CompareOptions slotCompareOptions = compareOptions;
++                            slotCompareOptions.compare = Compare::A;
++                            const auto& imageOptions = p.imageOptions->get();
++                            const auto& displayOptions = p.displayOptions->get();
++                            render->setClipRectEnabled(true);
++                            for (size_t i = 0; i < 2 && i < p.videoFrame.size(); ++i)
++                            {
++                                const ftk::Box2I slot = getSplitSlot(
++                                    compareOptions.compare,
++                                    i,
++                                    size);
++                                const ftk::Size2I frameRenderSize = getFrameRenderSize(p.videoFrame[i]);
++                                if (slot.w() > 0 &&
++                                    slot.h() > 0 &&
++                                    frameRenderSize.w > 0 &&
++                                    frameRenderSize.h > 0)
++                                {
++                                    const ftk::Box2I slotBox(0, 0, frameRenderSize.w, frameRenderSize.h);
++                                    const ftk::M44F slotVM =
++                                        ftk::translate(ftk::V3F(
++                                            slot.x() + viewPos.x,
++                                            slot.y() + viewPos.y,
++                                            0.F)) *
++                                        ftk::scale(ftk::V3F(zoom, zoom, 1.F));
++                                    std::vector<VideoFrame> videoFrame = { p.videoFrame[i] };
++                                    std::vector<ftk::Box2I> videoBoxes = { slotBox };
++                                    std::vector<ftk::ImageOptions> videoImageOptions;
++                                    if (i < imageOptions.size())
++                                    {
++                                        videoImageOptions.push_back(imageOptions[i]);
++                                    }
++                                    std::vector<DisplayOptions> videoDisplayOptions;
++                                    if (i < displayOptions.size())
++                                    {
++                                        videoDisplayOptions.push_back(displayOptions[i]);
++                                    }
++                                    render->setClipRect(slot);
++                                    render->setTransform(pm * slotVM);
++                                    render->drawVideo(
++                                        videoFrame,
++                                        videoBoxes,
++                                        videoImageOptions,
++                                        videoDisplayOptions,
++                                        slotCompareOptions,
++                                        p.colorBuffer->get());
++                                }
++                            }
++                            render->setClipRectEnabled(false);
++                        }
++                        else
++                        {
++                            render->setTransform(pm * vm);
++                            render->drawVideo(
++                                p.videoFrame,
++                                boxes,
++                                p.imageOptions->get(),
++                                p.displayOptions->get(),
++                                compareOptions,
++                                p.colorBuffer->get());
++                        }
+
+                         if (!p.videoFrame.empty() && p.fpsData.has_value())
+                         {
+@@ -716,8 +848,42 @@ namespace tl
+                     {
+                         ftk::gl::OffscreenBufferBinding binding(p.bgBuffer);
+                         render->clearViewport(ftk::Color4F(0.F, 0.F, 0.F, 0.F));
+-                        render->setTransform(pm);
+-                        render->drawBackground(boxes, vm, p.bgOptions->get());
++                        if (splitCompare)
++                        {
++                            render->setClipRectEnabled(true);
++                            for (size_t i = 0; i < 2 && i < p.videoFrame.size(); ++i)
++                            {
++                                const ftk::Box2I slot = getSplitSlot(
++                                    compareOptions.compare,
++                                    i,
++                                    size);
++                                const ftk::Size2I frameRenderSize = getFrameRenderSize(p.videoFrame[i]);
++                                if (slot.w() > 0 &&
++                                    slot.h() > 0 &&
++                                    frameRenderSize.w > 0 &&
++                                    frameRenderSize.h > 0)
++                                {
++                                    const ftk::M44F slotVM =
++                                        ftk::translate(ftk::V3F(
++                                            slot.x() + viewPos.x,
++                                            slot.y() + viewPos.y,
++                                            0.F)) *
++                                        ftk::scale(ftk::V3F(zoom, zoom, 1.F));
++                                    render->setClipRect(slot);
++                                    render->setTransform(pm);
++                                    render->drawBackground(
++                                        { ftk::Box2I(0, 0, frameRenderSize.w, frameRenderSize.h) },
++                                        slotVM,
++                                        p.bgOptions->get());
++                                }
++                            }
++                            render->setClipRectEnabled(false);
++                        }
++                        else
++                        {
++                            render->setTransform(pm);
++                            render->drawBackground(boxes, vm, p.bgOptions->get());
++                        }
+                     }
+
+                     // Draw the foreground buffer.
+@@ -725,11 +891,45 @@ namespace tl
+                     {
+                         ftk::gl::OffscreenBufferBinding binding(p.fgBuffer);
+                         render->clearViewport(ftk::Color4F(0.F, 0.F, 0.F, 0.F));
+-                        render->setTransform(pm);
+                         ForegroundOptions options = p.fgOptions->get();
+                         options.grid.fontInfo.size *= p.size.displayScale;
+                         options.grid.textMargin *= p.size.displayScale;
+-                        render->drawForeground(boxes, vm, options);
++                        if (splitCompare)
++                        {
++                            render->setClipRectEnabled(true);
++                            for (size_t i = 0; i < 2 && i < p.videoFrame.size(); ++i)
++                            {
++                                const ftk::Box2I slot = getSplitSlot(
++                                    compareOptions.compare,
++                                    i,
++                                    size);
++                                const ftk::Size2I frameRenderSize = getFrameRenderSize(p.videoFrame[i]);
++                                if (slot.w() > 0 &&
++                                    slot.h() > 0 &&
++                                    frameRenderSize.w > 0 &&
++                                    frameRenderSize.h > 0)
++                                {
++                                    const ftk::M44F slotVM =
++                                        ftk::translate(ftk::V3F(
++                                            slot.x() + viewPos.x,
++                                            slot.y() + viewPos.y,
++                                            0.F)) *
++                                        ftk::scale(ftk::V3F(zoom, zoom, 1.F));
++                                    render->setClipRect(slot);
++                                    render->setTransform(pm);
++                                    render->drawForeground(
++                                        { ftk::Box2I(0, 0, frameRenderSize.w, frameRenderSize.h) },
++                                        slotVM,
++                                        options);
++                                }
++                            }
++                            render->setClipRectEnabled(false);
++                        }
++                        else
++                        {
++                            render->setTransform(pm);
++                            render->drawForeground(boxes, vm, options);
++                        }
+                     }
+                 }
+                 catch (const std::exception& e)
+@@ -741,6 +941,7 @@ namespace tl
+                 }
+             }
+
++            render->drawRect(g, ftk::Color4F(0.F, 0.F, 0.F));
+             if (p.bgBuffer)
+             {
+                 render->drawTexture(p.bgBuffer->getColorID(), g, true);
+@@ -967,12 +1168,26 @@ namespace tl
+         ftk::Size2I Viewport::_getRenderSize() const
+         {
+             FTK_P();
++            if (isSplitCompare(p.compareOptions->get().compare) &&
++                !p.videoFrame.empty())
++            {
++                return getFrameRenderSize(p.videoFrame[0]);
++            }
+             return getRenderSize(p.compareOptions->get().compare, p.videoFrame);
+         }
+
+         ftk::V2I Viewport::_getViewportCenter() const
+         {
+             const ftk::Box2I& g = getGeometry();
++            FTK_P();
++            if (isSplitCompare(p.compareOptions->get().compare))
++            {
++                const ftk::Box2I slot = getSplitSlot(
++                    p.compareOptions->get().compare,
++                    0,
++                    g.size());
++                return ftk::V2I(slot.w() / 2, slot.h() / 2);
++            }
+             return ftk::V2I(g.w() / 2, g.h() / 2);
+         }
+
+@@ -982,7 +1197,14 @@ namespace tl
+             ftk::V2I viewPos;
+             double zoom = 1.0;
+             const ftk::Box2I& g = getGeometry();
+-            const ftk::Size2I viewportSize = g.size();
++            ftk::Size2I viewportSize = g.size();
++            if (isSplitCompare(p.compareOptions->get().compare))
++            {
++                viewportSize = getSplitSlot(
++                    p.compareOptions->get().compare,
++                    0,
++                    viewportSize).size();
++            }
+             const ftk::Size2I renderSize = _getRenderSize();
+             if (renderSize.w > 0 && renderSize.h > 0)
+             {
