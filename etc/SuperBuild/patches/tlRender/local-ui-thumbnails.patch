@@ -1,6 +1,60 @@
+diff -ruN a/lib/tlRender/Timeline/Player.cpp b/lib/tlRender/Timeline/Player.cpp
+--- a/lib/tlRender/Timeline/Player.cpp	2026-05-21 13:50:04
++++ b/lib/tlRender/Timeline/Player.cpp	2026-05-21 13:50:04
+@@ -533,6 +533,36 @@
+         }
+     }
+ 
++    }
++
++    void Player::syncToTime(const OTIO_NS::RationalTime& time, Playback playbackHint)
++    {
++        FTK_P();
++
++        const auto tmp = loop(
++            time.rescaled_to(p.timeRange.duration()).floor(),
++            p.timeRange);
++
++        p.currentTime->setIfChanged(tmp);
++        {
++            std::unique_lock<std::mutex> lock(p.mutex.mutex);
++            p.mutex.state.currentTime = tmp;
++            p.mutex.state.playback = Playback::Stop;
++            p.mutex.cacheDir =
++                Playback::Reverse == playbackHint ?
++                CacheDir::Reverse :
++                CacheDir::Forward;
++            p.mutex.clearRequests = true;
++            p.mutex.currentVideoFrame.clear();
++        }
++        {
++            std::unique_lock<std::mutex> lock(p.audioMutex.mutex);
++            p.audioMutex.state.playback = Playback::Stop;
++            p.audioReset(tmp);
++        }
++        p.playbackReset(tmp);
++    }
++
+     void Player::timeAction(TimeAction time)
+     {
+         FTK_P();
+diff -ruN a/lib/tlRender/Timeline/Player.h b/lib/tlRender/Timeline/Player.h
+--- a/lib/tlRender/Timeline/Player.h	2026-05-21 13:50:03
++++ b/lib/tlRender/Timeline/Player.h	2026-05-21 13:50:04
+@@ -212,6 +212,10 @@
+         //! Seek to the given time.
+         TL_API void seek(const OTIO_NS::RationalTime&);
+ 
++        //! Synchronize to an externally-driven transport time without starting
++        //! local playback. Used for follower players in split sync mode.
++        TL_API void syncToTime(const OTIO_NS::RationalTime&, Playback playbackHint);
++
+         //! Time action.
+         TL_API void timeAction(TimeAction);
+ 
 diff -ruN a/lib/tlRender/UI/ThumbnailSystem.cpp b/lib/tlRender/UI/ThumbnailSystem.cpp
---- a/lib/tlRender/UI/ThumbnailSystem.cpp	2026-05-21 09:47:34
-+++ b/lib/tlRender/UI/ThumbnailSystem.cpp	2026-05-21 09:47:38
+--- a/lib/tlRender/UI/ThumbnailSystem.cpp	2026-05-21 13:50:01
++++ b/lib/tlRender/UI/ThumbnailSystem.cpp	2026-05-21 13:50:04
 @@ -40,7 +40,12 @@
  
          namespace
@@ -371,8 +425,8 @@ diff -ruN a/lib/tlRender/UI/ThumbnailSystem.cpp b/lib/tlRender/UI/ThumbnailSyste
                                          size.h,
                                          ftk::ImageType::RGBA_U8);
 diff -ruN a/lib/tlRender/UI/ThumbnailSystem.h b/lib/tlRender/UI/ThumbnailSystem.h
---- a/lib/tlRender/UI/ThumbnailSystem.h	2026-05-21 09:47:35
-+++ b/lib/tlRender/UI/ThumbnailSystem.h	2026-05-21 09:47:38
+--- a/lib/tlRender/UI/ThumbnailSystem.h	2026-05-21 13:50:01
++++ b/lib/tlRender/UI/ThumbnailSystem.h	2026-05-21 13:50:04
 @@ -113,6 +113,10 @@
              //! Cancel pending requests.
              TL_API void cancelRequests(const std::vector<uint64_t>&);
@@ -393,8 +447,8 @@ diff -ruN a/lib/tlRender/UI/ThumbnailSystem.h b/lib/tlRender/UI/ThumbnailSystem.
              FTK_PRIVATE();
          };
 diff -ruN a/lib/tlRender/UI/TimelineItem.cpp b/lib/tlRender/UI/TimelineItem.cpp
---- a/lib/tlRender/UI/TimelineItem.cpp	2026-05-21 09:47:38
-+++ b/lib/tlRender/UI/TimelineItem.cpp	2026-05-21 09:47:38
+--- a/lib/tlRender/UI/TimelineItem.cpp	2026-05-21 13:50:03
++++ b/lib/tlRender/UI/TimelineItem.cpp	2026-05-21 13:50:04
 @@ -497,7 +497,14 @@
              bool out = true;
              if (_displayOptions.minimize)
@@ -412,8 +466,8 @@ diff -ruN a/lib/tlRender/UI/TimelineItem.cpp b/lib/tlRender/UI/TimelineItem.cpp
              return out;
          }
 diff -ruN a/lib/tlRender/UI/VideoClipItem.cpp b/lib/tlRender/UI/VideoClipItem.cpp
---- a/lib/tlRender/UI/VideoClipItem.cpp	2026-05-21 09:47:36
-+++ b/lib/tlRender/UI/VideoClipItem.cpp	2026-05-21 09:47:38
+--- a/lib/tlRender/UI/VideoClipItem.cpp	2026-05-21 13:50:02
++++ b/lib/tlRender/UI/VideoClipItem.cpp	2026-05-21 13:50:04
 @@ -15,6 +15,45 @@
  {
      namespace ui
@@ -658,55 +712,3 @@ diff -ruN a/lib/tlRender/UI/VideoClipItem.cpp b/lib/tlRender/UI/VideoClipItem.cp
                      }
                  }
              }
-diff -ruN a/lib/tlRender/Timeline/Player.h b/lib/tlRender/Timeline/Player.h
---- a/lib/tlRender/Timeline/Player.h	2026-05-21 12:45:00
-+++ b/lib/tlRender/Timeline/Player.h	2026-05-21 12:45:00
-@@ -212,6 +212,11 @@
-         //! Seek to the given time.
-         TL_API void seek(const OTIO_NS::RationalTime&);
- 
-+        //! Synchronize to an externally-driven transport time without starting
-+        //! local playback. Used for follower players in split sync mode.
-+        TL_API void syncToTime(const OTIO_NS::RationalTime&, Playback playbackHint);
-+
-         //! Time action.
-         TL_API void timeAction(TimeAction);
- 
-diff -ruN a/lib/tlRender/Timeline/Player.cpp b/lib/tlRender/Timeline/Player.cpp
---- a/lib/tlRender/Timeline/Player.cpp	2026-05-21 12:45:00
-+++ b/lib/tlRender/Timeline/Player.cpp	2026-05-21 12:45:00
-@@ -532,6 +532,35 @@
-         }
-     }
- 
-+    void Player::syncToTime(const OTIO_NS::RationalTime& time, Playback playbackHint)
-+    {
-+        FTK_P();
-+
-+        const auto tmp = loop(
-+            time.rescaled_to(p.timeRange.duration()).floor(),
-+            p.timeRange);
-+
-+        p.currentTime->setIfChanged(tmp);
-+        {
-+            std::unique_lock<std::mutex> lock(p.mutex.mutex);
-+            p.mutex.state.currentTime = tmp;
-+            p.mutex.state.playback = Playback::Stop;
-+            p.mutex.cacheDir =
-+                Playback::Reverse == playbackHint ?
-+                CacheDir::Reverse :
-+                CacheDir::Forward;
-+            p.mutex.clearRequests = true;
-+            p.mutex.currentVideoFrame.clear();
-+        }
-+        {
-+            std::unique_lock<std::mutex> lock(p.audioMutex.mutex);
-+            p.audioMutex.state.playback = Playback::Stop;
-+            p.audioReset(tmp);
-+        }
-+        p.playbackReset(tmp);
-+    }
-+
-     void Player::timeAction(TimeAction time)
-     {
-         FTK_P();

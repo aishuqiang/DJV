@@ -42,7 +42,7 @@ if(EXISTS ${TLRENDER_PATCH_FILE})
     cmake_path(ABSOLUTE_PATH TLRENDER_PATCH_FILE NORMALIZE)
     set(TLRENDER_PATCH_COMMAND
         ${CMAKE_COMMAND} -E chdir <SOURCE_DIR>
-        git apply --ignore-whitespace --whitespace=nowarn "${TLRENDER_PATCH_FILE}")
+        git apply -p1 --ignore-whitespace --whitespace=nowarn "${TLRENDER_PATCH_FILE}")
 else()
     set(TLRENDER_PATCH_COMMAND "")
 endif()
