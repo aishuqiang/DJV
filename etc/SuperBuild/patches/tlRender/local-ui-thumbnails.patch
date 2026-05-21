@@ -1,6 +1,6 @@
 diff -ruN a/lib/tlRender/UI/ThumbnailSystem.cpp b/lib/tlRender/UI/ThumbnailSystem.cpp
---- a/lib/tlRender/UI/ThumbnailSystem.cpp	2026-05-21 01:41:49
-+++ b/lib/tlRender/UI/ThumbnailSystem.cpp	2026-05-21 01:41:49
+--- a/lib/tlRender/UI/ThumbnailSystem.cpp	2026-05-21 09:47:34
++++ b/lib/tlRender/UI/ThumbnailSystem.cpp	2026-05-21 09:47:38
 @@ -40,7 +40,12 @@
  
          namespace
@@ -371,8 +371,8 @@ diff -ruN a/lib/tlRender/UI/ThumbnailSystem.cpp b/lib/tlRender/UI/ThumbnailSyste
                                          size.h,
                                          ftk::ImageType::RGBA_U8);
 diff -ruN a/lib/tlRender/UI/ThumbnailSystem.h b/lib/tlRender/UI/ThumbnailSystem.h
---- a/lib/tlRender/UI/ThumbnailSystem.h	2026-05-21 01:41:50
-+++ b/lib/tlRender/UI/ThumbnailSystem.h	2026-05-21 01:41:50
+--- a/lib/tlRender/UI/ThumbnailSystem.h	2026-05-21 09:47:35
++++ b/lib/tlRender/UI/ThumbnailSystem.h	2026-05-21 09:47:38
 @@ -113,6 +113,10 @@
              //! Cancel pending requests.
              TL_API void cancelRequests(const std::vector<uint64_t>&);
@@ -393,39 +393,9 @@ diff -ruN a/lib/tlRender/UI/ThumbnailSystem.h b/lib/tlRender/UI/ThumbnailSystem.
              FTK_PRIVATE();
          };
 diff -ruN a/lib/tlRender/UI/TimelineItem.cpp b/lib/tlRender/UI/TimelineItem.cpp
---- a/lib/tlRender/UI/TimelineItem.cpp	2026-05-21 01:41:51
-+++ b/lib/tlRender/UI/TimelineItem.cpp	2026-05-21 01:41:51
-@@ -163,7 +163,28 @@
-                 p.player->observeCurrentTime(),
-                 [this](const OTIO_NS::RationalTime& value)
-                 {
--                    _p->currentTime = value;
-+                    if (_p->player &&
-+                        _p->player->isStopped() &&
-+                        _p->player->getCurrentVideo().empty())
-+                    {
-+                        _p->currentTime = value;
-+                        setDrawUpdate();
-+                    }
-+                });
-+
-+            p.currentVideoObserver = ftk::ListObserver<VideoFrame>::create(
-+                p.player->observeCurrentVideo(),
-+                [this](const std::vector<VideoFrame>& value)
-+                {
-+                    if (!value.empty() &&
-+                        !value.front().time.strictly_equal(invalidTime))
-+                    {
-+                        _p->currentTime = value.front().time;
-+                    }
-+                    else if (_p->player && _p->player->isStopped())
-+                    {
-+                        _p->currentTime = _p->player->getCurrentTime();
-+                    }
-                     setDrawUpdate();
-                 });
- 
-@@ -497,7 +518,14 @@
+--- a/lib/tlRender/UI/TimelineItem.cpp	2026-05-21 09:47:38
++++ b/lib/tlRender/UI/TimelineItem.cpp	2026-05-21 09:47:38
+@@ -497,7 +497,14 @@
              bool out = true;
              if (_displayOptions.minimize)
              {
@@ -441,136 +411,9 @@ diff -ruN a/lib/tlRender/UI/TimelineItem.cpp b/lib/tlRender/UI/TimelineItem.cpp
              }
              return out;
          }
-@@ -511,6 +539,43 @@
-             return labelMaxSize;
-         }
- 
-+        bool TimelineItem::_getCurrentTimeLabel(
-+            const std::shared_ptr<ftk::FontSystem>& fontSystem,
-+            std::string& outLabel,
-+            ftk::Box2I& outRect) const
-+        {
-+            FTK_P();
-+            if (p.currentTime.is_invalid_time())
-+            {
-+                return false;
-+            }
-+
-+            const ftk::Box2I& g = getGeometry();
-+            const ftk::V2I pos(
-+                timeToPos(p.currentTime),
-+                p.size.scrollArea.min.y +
-+                g.min.y);
-+
-+            outLabel = _data->timeUnitsModel->getLabel(p.currentTime);
-+            ftk::V2I labelPos(
-+                pos.x + p.size.border * 2 + p.size.margin,
-+                pos.y + p.size.margin);
-+            const ftk::Size2I labelSize = fontSystem->getSize(outLabel, p.size.fontInfo);
-+            const ftk::Box2I g2(p.size.scrollArea.min + g.min, p.size.scrollArea.size());
-+            if (labelPos.x + labelSize.w > g2.max.x)
-+            {
-+                const ftk::V2I labelPos2(
-+                    pos.x - p.size.border * 2 - p.size.margin - labelSize.w,
-+                    pos.y + p.size.margin);
-+                if (labelPos2.x > g2.min.x)
-+                {
-+                    labelPos = labelPos2;
-+                }
-+            }
-+            outRect = ftk::Box2I(labelPos, labelSize);
-+            return true;
-+        }
-+
-         double TimelineItem::_getSecondsInc(
-             const std::shared_ptr<ftk::FontSystem>& fontSystem)
-         {
-@@ -716,23 +781,38 @@
-                 const double seconds = _getSecondsInc(event.fontSystem);
-                 if (seconds > 0.0)
-                 {
--                    const ftk::Size2I labelMaxSize = _getLabelMaxSize(event.fontSystem);
-+                    std::string currentLabel;
-+                    ftk::Box2I currentLabelRect;
-+                    const bool hasCurrentLabel =
-+                        _getCurrentTimeLabel(event.fontSystem, currentLabel, currentLabelRect);
-+                    const ftk::Box2I currentLabelRectPadded(
-+                        currentLabelRect.min.x - p.size.margin,
-+                        currentLabelRect.min.y,
-+                        currentLabelRect.w() + p.size.margin * 2,
-+                        currentLabelRect.h());
-                     const double t0 = std::floor(posToTime(drawRect.min.x).rescaled_to(1.0).value() / seconds) * seconds;
-                     const double t1 = std::ceil(posToTime(drawRect.max.x).rescaled_to(1.0).value() / seconds) * seconds;
-                     for (double t = t0; t <= t1; t += seconds)
-                     {
-                         const int x = timeToPos(OTIO_NS::RationalTime(t, 1.0));
-                         const std::string label = _data->timeUnitsModel->getLabel(OTIO_NS::RationalTime(t, 1.0).rescaled_to(rate));
-+                        const ftk::Box2I labelRect(
-+                            x +
-+                            p.size.border +
-+                            p.size.margin,
-+                            p.size.scrollArea.min.y +
-+                            g.min.y +
-+                            p.size.margin,
-+                            event.fontSystem->getSize(label, p.size.fontInfo).w,
-+                            p.size.fontMetrics.lineHeight);
-+                        if (hasCurrentLabel && ftk::intersects(labelRect, currentLabelRectPadded))
-+                        {
-+                            continue;
-+                        }
-                         event.render->drawText(
-                             event.fontSystem->getGlyphs(label, p.size.fontInfo),
-                             p.size.fontMetrics,
--                            ftk::V2I(
--                                x +
--                                p.size.border +
--                                p.size.margin,
--                                p.size.scrollArea.min.y +
--                                g.min.y +
--                                p.size.margin),
-+                            labelRect.min,
-                             event.style->getColorRole(ftk::ColorRole::TextDisabled));
-                     }
-                 }
-@@ -829,27 +909,16 @@
-                         g.h()),
-                     event.style->getColorRole(ftk::ColorRole::Red));
- 
--                const std::string label = _data->timeUnitsModel->getLabel(p.currentTime);
--                ftk::V2I labelPos(
--                    pos.x + p.size.border * 2 + p.size.margin,
--                    pos.y + p.size.margin);
--                const ftk::Size2I labelSize = event.fontSystem->getSize(label, p.size.fontInfo);
--                const ftk::Box2I g2(p.size.scrollArea.min + g.min, p.size.scrollArea.size());
--                if (labelPos.x + labelSize.w > g2.max.x)
-+                std::string label;
-+                ftk::Box2I labelRect;
-+                if (_getCurrentTimeLabel(event.fontSystem, label, labelRect))
-                 {
--                    const ftk::V2I labelPos2(
--                        pos.x - p.size.border * 2 - p.size.margin - labelSize.w,
--                        pos.y + p.size.margin);
--                    if (labelPos2.x > g2.min.x)
--                    {
--                        labelPos = labelPos2;
--                    }
-+                    event.render->drawText(
-+                        event.fontSystem->getGlyphs(label, p.size.fontInfo),
-+                        p.size.fontMetrics,
-+                        labelRect.min,
-+                        event.style->getColorRole(ftk::ColorRole::Text));
-                 }
--                event.render->drawText(
--                    event.fontSystem->getGlyphs(label, p.size.fontInfo),
--                    p.size.fontMetrics,
--                    labelPos,
--                    event.style->getColorRole(ftk::ColorRole::Text));
-             }
-         }
- 
 diff -ruN a/lib/tlRender/UI/VideoClipItem.cpp b/lib/tlRender/UI/VideoClipItem.cpp
---- a/lib/tlRender/UI/VideoClipItem.cpp	2026-05-21 01:41:51
-+++ b/lib/tlRender/UI/VideoClipItem.cpp	2026-05-21 01:41:51
+--- a/lib/tlRender/UI/VideoClipItem.cpp	2026-05-21 09:47:36
++++ b/lib/tlRender/UI/VideoClipItem.cpp	2026-05-21 09:47:38
 @@ -15,6 +15,45 @@
  {
      namespace ui
