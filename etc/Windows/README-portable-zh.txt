@@ -2,9 +2,12 @@ DJV Windows 免安装版使用说明
 ================================
 
 1. 解压整个文件夹到任意路径（路径尽量不要含中文或空格）。
-2. 双击 DJV.bat 启动；或直接运行 bin\djv.exe。
-3. 可将视频文件拖放到 djv.exe 或 DJV.bat 上打开。
+2. 双击 DJV.bat 启动。
+3. 可将视频文件拖放到 DJV.bat 上打开。
 4. 双视频示例（命令行）：
-   bin\djv.exe 视频A.mp4 -b 视频B.mp4 -c horizontal
+   DJV.bat 视频A.mp4 -b 视频B.mp4 -c horizontal
+
+DJV.bat 会使用本目录下的 djv.portable.json 保存窗口样式和布局设置，
+避免读取系统用户目录中的旧版 DJV 设置。
 
 本目录为绿色版，卸载时直接删除文件夹即可。

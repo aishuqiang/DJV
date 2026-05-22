@@ -111,7 +111,7 @@ Title="DJV Portable"
 ExtractTitle="Extracting DJV Portable"
 ExtractDialogText="Preparing DJV..."
 GUIMode="1"
-RunProgram="bin\\djv.exe"
+RunProgram="DJV.bat"
 ;!@InstallEnd@!
 '@
 

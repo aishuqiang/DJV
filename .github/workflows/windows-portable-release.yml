@@ -99,6 +99,16 @@ jobs:
         }
         Write-Host "Verified packaged local changes in $($exe.FullName)"
 
+        $bat = Get-ChildItem $verifyDir -Recurse -Filter "DJV.bat" | Select-Object -First 1
+        if (-not $bat) {
+          throw "DJV.bat was not found in the portable ZIP."
+        }
+        $batText = [System.IO.File]::ReadAllText($bat.FullName)
+        if (-not $batText.Contains("-settingsFile") -or -not $batText.Contains("djv.portable.json")) {
+          throw "DJV.bat does not use the portable settings file."
+        }
+        Write-Host "Verified portable launcher settings in $($bat.FullName)"
+
         $portableExe = Get-ChildItem -LiteralPath "build-Release" -Filter "djv-*-windows-*-portable.exe" -File | Select-Object -First 1
         if (-not $portableExe) {
           throw "Portable self-extracting EXE was not generated."
