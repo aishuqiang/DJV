@@ -387,8 +387,12 @@ jobs:
 
     - uses: actions/upload-artifact@v7
       with:
-        name: DJV-Windows-Portable-x64
-        path: |
-          build-Release\djv-*-windows-*.zip
-          build-Release\djv-*-windows-*-portable.exe
+        name: DJV-Windows-Portable-ZIP-x64
+        path: build-Release\djv-*-windows-*.zip
+        archive: false
+
+    - uses: actions/upload-artifact@v7
+      with:
+        name: DJV-Windows-Portable-EXE-x64
+        path: build-Release\djv-*-windows-*-portable.exe
         archive: false
