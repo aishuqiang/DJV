@@ -334,7 +334,7 @@ jobs:
       TLRENDER_SVTAV1: OFF
       TLRENDER_FFMPEG: ON
       TLRENDER_FFMPEG_MINIMAL: ON
-      TLRENDER_FFMPEG_PLUGIN: OFF
+      TLRENDER_FFMPEG_PLUGIN: ON
       TLRENDER_FFMPEG_CMD: ON
       TLRENDER_NASM: OFF
       TLRENDER_OIIO: ON
@@ -384,6 +384,40 @@ jobs:
         Write-Host "Portable ZIP: $zipPath"
         Write-Host "Portable EXE: $portableExePath"
         & "djv\etc\Windows\windows-portable-sfx.ps1" -ZipPath $zipPath -OutputPath $portableExePath
+
+    - name: Verify packaged local changes
+      shell: pwsh
+      run: |
+        $zip = Get-ChildItem -LiteralPath "build-Release" -Filter "djv-*-windows-*.zip" -File | Select-Object -First 1
+        if (-not $zip) {
+          throw "Portable ZIP was not generated."
+        }
+        $verifyDir = Join-Path $env:RUNNER_TEMP "djv-package-verify"
+        Remove-Item -Recurse -Force $verifyDir -ErrorAction SilentlyContinue
+        Expand-Archive -Path $zip.FullName -DestinationPath $verifyDir -Force
+        $exe = Get-ChildItem $verifyDir -Recurse -Filter "djv.exe" | Select-Object -First 1
+        if (-not $exe) {
+          throw "djv.exe was not found in the portable ZIP."
+        }
+        $text = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($exe.FullName))
+        $requiredStrings = @(
+          "未加载 A 视频",
+          "打开 A 视频",
+          "请选择 B 视频",
+          "DJV_SMOKE_DUAL_TOTAL_EXIT"
+        )
+        foreach ($value in $requiredStrings) {
+          if (-not $text.Contains($value)) {
+            throw "Packaged djv.exe is missing expected local change marker: $value"
+          }
+        }
+        Write-Host "Verified packaged local changes in $($exe.FullName)"
+
+        $portableExe = Get-ChildItem -LiteralPath "build-Release" -Filter "djv-*-windows-*-portable.exe" -File | Select-Object -First 1
+        if (-not $portableExe) {
+          throw "Portable self-extracting EXE was not generated."
+        }
+        Write-Host "Verified portable self-extracting EXE exists: $($portableExe.FullName)"
 
     - uses: actions/upload-artifact@v7
       with:
