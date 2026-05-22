@@ -36,12 +36,15 @@ Write-Host "SFX output EXE: $OutputPath"
 $programFilesRoots = @(
     $env:ProgramFiles,
     [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
-) | Where-Object { $_ }
+)
+$programFilesRoots = @($programFilesRoots | Where-Object { $_ })
 
-$sevenZipCandidates = foreach ($root in $programFilesRoots) {
-    Join-Path $root "7-Zip\7z.exe"
-}
-$sevenZipCandidates = $sevenZipCandidates | Where-Object { Test-Path -LiteralPath $_ }
+$sevenZipCandidates = @(
+    foreach ($root in $programFilesRoots) {
+        Join-Path $root "7-Zip\7z.exe"
+    }
+)
+$sevenZipCandidates = @($sevenZipCandidates | Where-Object { Test-Path -LiteralPath $_ })
 
 if (-not $sevenZipCandidates) {
     throw "7-Zip was not found. Install 7-Zip or run this script on GitHub Actions windows-latest."
@@ -51,7 +54,8 @@ $sevenZip = $sevenZipCandidates[0]
 $sevenZipDir = Split-Path -Parent $sevenZip
 $sfxCandidates = @(
     (Join-Path (Get-RequiredValue "7-Zip directory" $sevenZipDir) "7z.sfx")
-) | Where-Object { Test-Path -LiteralPath $_ }
+)
+$sfxCandidates = @($sfxCandidates | Where-Object { Test-Path -LiteralPath $_ })
 
 if (-not $sfxCandidates) {
     throw "7-Zip SFX module was not found next to $sevenZip."
@@ -74,7 +78,7 @@ $configPath = Join-Path $workDir "config.txt"
 New-Item -ItemType Directory -Path $extractDir | Out-Null
 Expand-Archive -Path $zipItem.FullName -DestinationPath $extractDir -Force
 
-$roots = Get-ChildItem -LiteralPath $extractDir -Directory
+$roots = @(Get-ChildItem -LiteralPath $extractDir -Directory)
 if ($roots.Count -ne 1) {
     throw "Expected the portable ZIP to contain exactly one root folder, found $($roots.Count)."
 }
