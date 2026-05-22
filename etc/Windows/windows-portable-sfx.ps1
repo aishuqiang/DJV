@@ -42,7 +42,17 @@ if (-not $sfxCandidates) {
 }
 
 $sfxModule = $sfxCandidates[0]
-$workDir = Join-Path $env:TEMP ("djv-sfx-" + [Guid]::NewGuid().ToString("N"))
+$tempRoot = @(
+    $env:RUNNER_TEMP,
+    $env:TEMP,
+    $env:TMP,
+    [System.IO.Path]::GetTempPath()
+) | Where-Object { $_ } | Select-Object -First 1
+if (-not $tempRoot) {
+    throw "No temporary directory is available for creating the portable EXE."
+}
+
+$workDir = Join-Path $tempRoot ("djv-sfx-" + [Guid]::NewGuid().ToString("N"))
 $extractDir = Join-Path $workDir "extract"
 $archivePath = Join-Path $workDir "payload.7z"
 $configPath = Join-Path $workDir "config.txt"
