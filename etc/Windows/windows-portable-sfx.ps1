@@ -7,6 +7,18 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Get-RequiredValue {
+    param(
+        [string]$Name,
+        [AllowEmptyString()]
+        [string]$Value
+    )
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        throw "$Name is empty."
+    }
+    return $Value
+}
+
 if (-not (Test-Path -LiteralPath $ZipPath)) {
     throw "Portable ZIP not found: $ZipPath"
 }
@@ -14,8 +26,12 @@ if (-not (Test-Path -LiteralPath $ZipPath)) {
 $zipItem = Get-Item -LiteralPath $ZipPath
 if (-not $OutputPath) {
     $baseName = [System.IO.Path]::GetFileNameWithoutExtension($zipItem.Name)
-    $OutputPath = Join-Path $zipItem.DirectoryName "$baseName-portable.exe"
+    $zipDir = Split-Path -Parent $zipItem.FullName
+    $OutputPath = Join-Path (Get-RequiredValue "Portable ZIP directory" $zipDir) "$baseName-portable.exe"
 }
+
+Write-Host "SFX source ZIP: $($zipItem.FullName)"
+Write-Host "SFX output EXE: $OutputPath"
 
 $programFilesRoots = @(
     $env:ProgramFiles,
@@ -34,7 +50,7 @@ if (-not $sevenZipCandidates) {
 $sevenZip = $sevenZipCandidates[0]
 $sevenZipDir = Split-Path -Parent $sevenZip
 $sfxCandidates = @(
-    (Join-Path $sevenZipDir "7z.sfx")
+    (Join-Path (Get-RequiredValue "7-Zip directory" $sevenZipDir) "7z.sfx")
 ) | Where-Object { Test-Path -LiteralPath $_ }
 
 if (-not $sfxCandidates) {
@@ -48,9 +64,7 @@ $tempRoot = @(
     $env:TMP,
     [System.IO.Path]::GetTempPath()
 ) | Where-Object { $_ } | Select-Object -First 1
-if (-not $tempRoot) {
-    throw "No temporary directory is available for creating the portable EXE."
-}
+$tempRoot = Get-RequiredValue "Temporary directory" $tempRoot
 
 $workDir = Join-Path $tempRoot ("djv-sfx-" + [Guid]::NewGuid().ToString("N"))
 $extractDir = Join-Path $workDir "extract"
@@ -102,7 +116,7 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 $outputFullPath = [System.IO.Path]::GetFullPath($OutputPath)
 $outputDir = Split-Path -Parent $outputFullPath
-New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+New-Item -ItemType Directory -Path (Get-RequiredValue "Portable EXE output directory" $outputDir) -Force | Out-Null
 
 $outStream = [System.IO.File]::Create($outputFullPath)
 try {

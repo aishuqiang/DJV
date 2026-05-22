@@ -374,11 +374,16 @@ jobs:
     - name: Build portable EXE
       shell: pwsh
       run: |
-        $zip = Get-ChildItem "build-Release\djv-*-windows-*.zip" | Select-Object -First 1
+        $zip = Get-ChildItem -LiteralPath "build-Release" -Filter "djv-*-windows-*.zip" -File | Select-Object -First 1
         if (-not $zip) {
+          Get-ChildItem -LiteralPath "build-Release" -Recurse | Select-Object FullName
           throw "Portable ZIP was not generated."
         }
-        djv\etc\Windows\windows-portable-sfx.ps1 -ZipPath $zip.FullName
+        $zipPath = (Resolve-Path -LiteralPath $zip.FullName).Path
+        $portableExePath = Join-Path "build-Release" "$($zip.BaseName)-portable.exe"
+        Write-Host "Portable ZIP: $zipPath"
+        Write-Host "Portable EXE: $portableExePath"
+        & "djv\etc\Windows\windows-portable-sfx.ps1" -ZipPath $zipPath -OutputPath $portableExePath
 
     - uses: actions/upload-artifact@v7
       with:
